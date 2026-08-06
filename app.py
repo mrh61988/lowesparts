@@ -721,24 +721,63 @@ with tab_test:
     """)
 
     st.markdown("---")
-    # --- TEST TABLE 1: Interactive Tech Item-Level Drilldown (Excludes AO Smith Water Heaters) ---
+    # --- TEST TABLE 1: Interactive Tech Item-Level Drilldown with Category Filter ---
     st.subheader("1. Interactive Technician Item Usage & Revenue Drilldown (Excludes AO Smith Water Heaters)")
-    selected_tech = st.selectbox("Select Technician to Inspect:", sorted(VALID_TECHS))
+    
+    col_sel1, col_sel2 = st.columns(2)
+    with col_sel1:
+        selected_tech = st.selectbox("Select Technician to Inspect:", sorted(VALID_TECHS))
+    with col_sel2:
+        selected_bu_label = st.selectbox(
+            "Filter Category / Business Unit:",
+            ["All (Simple Installs & WH Parts)", "Simple Installs", "Water Heater Parts"]
+        )
 
     if not df_parts.empty:
-        # Filter out AO Smith water heater units for this section
+        # Exclude AO Smith water heater units
         is_ao_smith = df_parts['Item'].astype(str).str.lower().str.contains(r'a\.?o\.?\s*smith', regex=True, na=False)
-        df_parts_no_aosmith = df_parts[~is_ao_smith]
+        df_parts_clean = df_parts[~is_ao_smith].copy()
 
-        p_tech = df_parts_no_aosmith[df_parts_no_aosmith['Tech'] == selected_tech]
-        tech_rev = tech_metrics[selected_tech]['Revenue']
-        tech_jobs = tech_metrics[selected_tech]['Jobs']
+        # Apply Category/BU Filter
+        if selected_bu_label == "Simple Installs":
+            p_tech = df_parts_clean[(df_parts_clean['Tech'] == selected_tech) & (df_parts_clean['Business Unit'].str.contains('Simple Installs', case=False, na=False))]
+            
+            # Category-specific Revenue & Jobs
+            if not inv_filtered.empty:
+                tech_rev = inv_filtered[(inv_filtered['Tech Clean'] == selected_tech) & (inv_filtered['Business Unit Clean'].str.contains('Simple Installs', case=False, na=False))]['Invoice Total'].sum()
+            else:
+                tech_rev = 0.0
+                
+            if not jobs_filtered.empty:
+                tech_jobs = len(jobs_filtered[(jobs_filtered['Tech Clean'] == selected_tech) & (jobs_filtered['Business Unit'].str.contains('Simple Installs', case=False, na=False))])
+            else:
+                tech_jobs = 0
+
+        elif selected_bu_label == "Water Heater Parts":
+            p_tech = df_parts_clean[(df_parts_clean['Tech'] == selected_tech) & (df_parts_clean['Business Unit'].str.contains('Water Heater', case=False, na=False)) & (~df_parts_clean['Business Unit'].str.contains('Units', case=False, na=False))]
+            
+            # Category-specific Revenue & Jobs
+            if not inv_filtered.empty:
+                tech_rev = inv_filtered[(inv_filtered['Tech Clean'] == selected_tech) & (inv_filtered['Business Unit Clean'].str.contains('Water Heater', case=False, na=False))]['Invoice Total'].sum()
+            else:
+                tech_rev = 0.0
+                
+            if not jobs_filtered.empty:
+                tech_jobs = len(jobs_filtered[(jobs_filtered['Tech Clean'] == selected_tech) & (jobs_filtered['Business Unit'].str.contains('Water Heater', case=False, na=False))])
+            else:
+                tech_jobs = 0
+
+        else: # All (Simple Installs & WH Parts)
+            p_tech = df_parts_clean[(df_parts_clean['Tech'] == selected_tech) & (~df_parts_clean['Business Unit'].str.contains('Units', case=False, na=False))]
+            tech_rev = tech_metrics[selected_tech]['Revenue']
+            tech_jobs = tech_metrics[selected_tech]['Jobs']
+
         tech_parts_total = p_tech['Total Value'].sum()
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Jobs Completed", tech_jobs)
         c2.metric("Attributed Revenue", f"${tech_rev:,.2f}")
-        c3.metric("Net Parts Cost (Excl. AO Smith)", f"${tech_parts_total:,.2f}")
+        c3.metric("Net Parts Cost", f"${tech_parts_total:,.2f}")
         c4.metric("Material % of Revenue", f"{(tech_parts_total / tech_rev * 100) if tech_rev > 0 else 0:.2f}%")
 
         if not p_tech.empty:
@@ -756,7 +795,7 @@ with tab_test:
 
             st.dataframe(tech_item_summary, use_container_width=True, hide_index=True)
         else:
-            st.info(f"No non-AO Smith parts usage logged for {selected_tech}.")
+            st.info(f"No parts usage logged for {selected_tech} under {selected_bu_label}.")
     else:
         st.info("Parts usage data not loaded.")
 
