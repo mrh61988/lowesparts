@@ -720,8 +720,13 @@ with tab_jobs:
                 'Item / Fixture Type': item_type_label,
                 'Invoice Total': row['Invoice Amount']
             }
+            tot_fixtures = 0
             for f in fixture_cols:
-                row_dict[f] = parsed_counts.get(f, 0)
+                cnt = parsed_counts.get(f, 0)
+                row_dict[f] = cnt
+                tot_fixtures += cnt
+                
+            row_dict['Total Items'] = max(1, tot_fixtures)
                 
             jobs_breakdown_rows.append(row_dict)
 
@@ -743,15 +748,17 @@ with tab_jobs:
         st.subheader("🏢 Total Department Revenue by Job Type & Item Type")
         dept_rev_summary = df_jobs_parsed.groupby(['Department', 'Job Type', 'Item / Fixture Type']).agg(
             Job_Count=('Job Type', 'count'),
+            Total_Items=('Total Items', 'sum'),
             Total_Revenue=('Invoice Total', 'sum'),
             Avg_Revenue_Per_Job=('Invoice Total', 'mean')
         ).reset_index().sort_values(by=['Department', 'Total_Revenue'], ascending=[True, False])
 
+        dept_rev_summary['Revenue Per Item'] = (dept_rev_summary['Total_Revenue'] / dept_rev_summary['Total_Items']).map('${:,.2f}'.format)
         dept_rev_summary['Total_Revenue'] = dept_rev_summary['Total_Revenue'].map('${:,.2f}'.format)
         dept_rev_summary['Avg_Revenue_Per_Job'] = dept_rev_summary['Avg_Revenue_Per_Job'].map('${:,.2f}'.format)
         
         st.dataframe(
-            dept_rev_summary, 
+            dept_rev_summary[['Department', 'Job Type', 'Item / Fixture Type', 'Job_Count', 'Revenue Per Item', 'Total_Revenue', 'Avg_Revenue_Per_Job']], 
             use_container_width=True, 
             hide_index=True,
             column_config={
@@ -759,6 +766,7 @@ with tab_jobs:
                 "Job Type": st.column_config.TextColumn("Job Type", width="medium"),
                 "Item / Fixture Type": st.column_config.TextColumn("Item / Fixture Type", width="medium"),
                 "Job_Count": st.column_config.NumberColumn("Jobs", width="small"),
+                "Revenue Per Item": st.column_config.TextColumn("Revenue / Item", width="medium"),
                 "Total_Revenue": st.column_config.TextColumn("Total Revenue", width="medium"),
                 "Avg_Revenue_Per_Job": st.column_config.TextColumn("Avg Rev / Job", width="medium")
             }
@@ -776,15 +784,17 @@ with tab_jobs:
 
         tech_rev_summary = df_tech_jobs.groupby(['Technician', 'Department', 'Job Type', 'Item / Fixture Type']).agg(
             Job_Count=('Job Type', 'count'),
+            Total_Items=('Total Items', 'sum'),
             Total_Revenue=('Invoice Total', 'sum'),
             Avg_Revenue_Per_Job=('Invoice Total', 'mean')
         ).reset_index().sort_values(by=['Technician', 'Total_Revenue'], ascending=[True, False])
 
+        tech_rev_summary['Revenue Per Item'] = (tech_rev_summary['Total_Revenue'] / tech_rev_summary['Total_Items']).map('${:,.2f}'.format)
         tech_rev_summary['Total_Revenue'] = tech_rev_summary['Total_Revenue'].map('${:,.2f}'.format)
         tech_rev_summary['Avg_Revenue_Per_Job'] = tech_rev_summary['Avg_Revenue_Per_Job'].map('${:,.2f}'.format)
 
         st.dataframe(
-            tech_rev_summary, 
+            tech_rev_summary[['Technician', 'Department', 'Job Type', 'Item / Fixture Type', 'Job_Count', 'Revenue Per Item', 'Total_Revenue', 'Avg_Revenue_Per_Job']], 
             use_container_width=True, 
             hide_index=True,
             column_config={
@@ -793,15 +803,16 @@ with tab_jobs:
                 "Job Type": st.column_config.TextColumn("Job Type", width="medium"),
                 "Item / Fixture Type": st.column_config.TextColumn("Item / Fixture Type", width="medium"),
                 "Job_Count": st.column_config.NumberColumn("Jobs", width="small"),
+                "Revenue Per Item": st.column_config.TextColumn("Revenue / Item", width="medium"),
                 "Total_Revenue": st.column_config.TextColumn("Total Revenue", width="medium"),
                 "Avg_Revenue_Per_Job": st.column_config.TextColumn("Avg Rev / Job", width="medium")
             }
         )
 
         st.markdown("---")
-        # --- FIXTURE QUANTITY BREAKDOWNS (WITH DEPARTMENT FILTER & REVENUE PER JOB) ---
+        # --- FIXTURE QUANTITY BREAKDOWNS (WITH DEPARTMENT FILTER, REVENUE PER JOB & REVENUE PER ITEM) ---
         st.subheader("Item & Fixture Quantities Breakdown by Job Title")
-        st.caption("Parses fixture counts from Job Titles & Subtitles (e.g. '1/1' with Faucet & Toilet = 1 Faucet, 1 Toilet). Includes average revenue per job.")
+        st.caption("Parses fixture counts from Job Titles & Subtitles (e.g. '1/1' with Faucet & Toilet = 1 Faucet, 1 Toilet). Includes revenue per job and revenue per item.")
 
         selected_bu_fixtures = st.selectbox(
             "Filter Department / Business Unit:",
@@ -815,6 +826,7 @@ with tab_jobs:
 
         job_title_agg = df_fixtures_filtered.groupby(['Department', 'Job Type']).agg(
             Job_Count=('Job Type', 'count'),
+            Total_Items=('Total Items', 'sum'),
             Total_Billed=('Invoice Total', 'sum'),
             Avg_Revenue_Per_Job=('Invoice Total', 'mean'),
             Toilets=('Toilet', 'sum'),
@@ -827,10 +839,11 @@ with tab_jobs:
         ).reset_index().sort_values(by=['Department', 'Job_Count'], ascending=[True, False])
 
         job_title_agg['Revenue Per Job'] = job_title_agg['Avg_Revenue_Per_Job'].map('${:,.2f}'.format)
+        job_title_agg['Revenue Per Item'] = (job_title_agg['Total_Billed'] / job_title_agg['Total_Items']).map('${:,.2f}'.format)
         job_title_agg['Total_Billed'] = job_title_agg['Total_Billed'].map('${:,.2f}'.format)
 
         show_title_cols = [
-            'Department', 'Job Type', 'Job_Count', 'Revenue Per Job', 'Total_Billed',
+            'Department', 'Job Type', 'Job_Count', 'Revenue Per Job', 'Revenue Per Item', 'Total_Billed',
             'Toilets', 'Faucets', 'Disposals', 'Sinks', 'Water_Heaters', 'Bidets', 'Dishwashers'
         ]
         
@@ -843,6 +856,7 @@ with tab_jobs:
                 "Job Type": st.column_config.TextColumn("Job Title", width="large"),
                 "Job_Count": st.column_config.NumberColumn("Jobs", width="small"),
                 "Revenue Per Job": st.column_config.TextColumn("Revenue / Job", width="medium"),
+                "Revenue Per Item": st.column_config.TextColumn("Revenue / Item", width="medium"),
                 "Total_Billed": st.column_config.TextColumn("Total Billed", width="medium"),
             }
         )
