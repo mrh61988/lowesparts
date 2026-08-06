@@ -713,20 +713,16 @@ with tab_jobs:
             # Standardized title with Title Casing to group 'Sink' and 'sink' together
             clean_title = re.sub(r':\s*lowes.*', '', str(title_val), flags=re.IGNORECASE).strip().title()
 
+            tot_fixtures = sum(parsed_counts.values())
+
             row_dict = {
                 'Technician': row['Tech Clean'],
                 'Department': row['Business Unit'],
                 'Job Type': clean_title,
                 'Item / Fixture Type': item_type_label,
-                'Invoice Total': row['Invoice Amount']
+                'Invoice Total': row['Invoice Amount'],
+                'Total Items': max(1, tot_fixtures)
             }
-            tot_fixtures = 0
-            for f in fixture_cols:
-                cnt = parsed_counts.get(f, 0)
-                row_dict[f] = cnt
-                tot_fixtures += cnt
-                
-            row_dict['Total Items'] = max(1, tot_fixtures)
                 
             jobs_breakdown_rows.append(row_dict)
 
@@ -810,9 +806,8 @@ with tab_jobs:
         )
 
         st.markdown("---")
-        # --- FIXTURE QUANTITY BREAKDOWNS (WITH DEPARTMENT FILTER, REVENUE PER JOB & REVENUE PER ITEM) ---
-        st.subheader("Item & Fixture Quantities Breakdown by Job Title")
-        st.caption("Parses fixture counts from Job Titles & Subtitles (e.g. '1/1' with Faucet & Toilet = 1 Faucet, 1 Toilet). Includes revenue per job and revenue per item.")
+        # --- JOB TITLE REVENUE BREAKDOWN ---
+        st.subheader("Job Title Revenue & Quantity Breakdown")
 
         selected_bu_fixtures = st.selectbox(
             "Filter Department / Business Unit:",
@@ -828,14 +823,7 @@ with tab_jobs:
             Job_Count=('Job Type', 'count'),
             Total_Items=('Total Items', 'sum'),
             Total_Billed=('Invoice Total', 'sum'),
-            Avg_Revenue_Per_Job=('Invoice Total', 'mean'),
-            Toilets=('Toilet', 'sum'),
-            Faucets=('Faucet', 'sum'),
-            Disposals=('Garbage Disposal', 'sum'),
-            Sinks=('Sink', 'sum'),
-            Water_Heaters=('Water Heater', 'sum'),
-            Bidets=('Bidet', 'sum'),
-            Dishwashers=('Dishwasher', 'sum')
+            Avg_Revenue_Per_Job=('Invoice Total', 'mean')
         ).reset_index().sort_values(by=['Department', 'Job_Count'], ascending=[True, False])
 
         job_title_agg['Revenue Per Job'] = job_title_agg['Avg_Revenue_Per_Job'].map('${:,.2f}'.format)
@@ -843,8 +831,7 @@ with tab_jobs:
         job_title_agg['Total_Billed'] = job_title_agg['Total_Billed'].map('${:,.2f}'.format)
 
         show_title_cols = [
-            'Department', 'Job Type', 'Job_Count', 'Revenue Per Job', 'Revenue Per Item', 'Total_Billed',
-            'Toilets', 'Faucets', 'Disposals', 'Sinks', 'Water_Heaters', 'Bidets', 'Dishwashers'
+            'Department', 'Job Type', 'Job_Count', 'Revenue Per Job', 'Revenue Per Item', 'Total_Billed'
         ]
         
         st.dataframe(
@@ -860,18 +847,6 @@ with tab_jobs:
                 "Total_Billed": st.column_config.TextColumn("Total Billed", width="medium"),
             }
         )
-
-        st.subheader("Total Installed Fixtures Breakdown by Technician")
-        tech_fixture_agg = df_fixtures_filtered.groupby(['Technician', 'Department']).agg(
-            Total_Jobs=('Job Type', 'count'),
-            Toilets=('Toilet', 'sum'),
-            Faucets=('Faucet', 'sum'),
-            Disposals=('Garbage Disposal', 'sum'),
-            Sinks=('Sink', 'sum'),
-            Water_Heaters=('Water Heater', 'sum')
-        ).reset_index().sort_values(by=['Department', 'Technician'])
-
-        st.dataframe(tech_fixture_agg, use_container_width=True, hide_index=True)
 
         st.subheader("Job Summary by Business Unit Level")
         bu_jobs = jobs_filtered.groupby('Business Unit').agg(
