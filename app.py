@@ -479,23 +479,6 @@ with tab_minmax:
                     return bu
                 
                 bu_sheet = row.get('Business Unit_sheet', 'Unknown')
-                if 'water heater' in str(bu_sheet).lower():
-                    item_name_val = row.get('Item Name', '')
-                    item_val = row.get('Item', '')
-                    desc = (str(item_name_val) + " " + str(item_val)).lower()
-                    
-                    # Precise Unit heuristic: Must match full water heater unit descriptions
-                    # and must NOT be an expansion tank or galvanized fitting
-                    is_unit = (
-                        'ao smith' in desc or 
-                        'a.o. smith' in desc or 
-                        re.search(r'\b(30|40|50|75|80)\s*gal\b', desc)
-                    ) and not ('expansion tank' in desc or 'galv' in desc)
-
-                    if is_unit:
-                        return 'Lowes - Water Heaters (Units)'
-                    else:
-                        return 'Lowes - Water Heaters (Parts)'
                 return bu_sheet
 
             merged_minmax['Business Unit'] = merged_minmax.apply(resolve_wh_bu, axis=1)
@@ -626,11 +609,8 @@ with tab_minmax:
         st.subheader("1. Lowes - Simple Installs Min/Max Comparison")
         render_comparison_table('Lowes - Simple Installs')
         
-        st.subheader("2. Lowes - Water Heaters (Parts) Min/Max Comparison")
-        render_comparison_table('Lowes - Water Heaters (Parts)')
-
-        st.subheader("3. Lowes - Water Heaters (Units) Min/Max Comparison")
-        render_comparison_table('Lowes - Water Heaters (Units)')
+        st.subheader("2. Lowes - Water Heaters Min/Max Comparison")
+        render_comparison_table('Lowes - Water Heaters')
 
     else:
         st.info("Google Sheet parts data not loaded.")
@@ -733,14 +713,26 @@ with tab_test:
     st.markdown("""
     This section explicitly separates **Simple Installs** and **Water Heaters** to evaluate technician replenishment 
     intensity against expected business unit ratios. Full job and revenue credit is attributed to the first listed technician.
-    *Note: Mathew Hodges is based in Tucson and does not pull from the main warehouse.*
+    
+    *Note: In Section 2, only **Water Heater Parts** usage is counted towards Net Replenishment Cost so actual water heater unit tanks do not distort material ratios. Mathew Hodges is based in Tucson and does not pull from the main warehouse.*
     """)
 
     def get_bu_efficiency_table(bu_name, max_material_ratio_threshold):
         bu_rows = []
         for t in sorted(VALID_TECHS):
             if not df_parts.empty:
-                p_sub = df_parts[(df_parts['Tech'] == t) & (df_parts['Business Unit'].str.contains(bu_name, case=False, na=False))]
+                # Filter specifically for Parts (excluding actual Water Heater Units from replenishment cost)
+                if 'water heater' in bu_name.lower():
+                    p_sub = df_parts[
+                        (df_parts['Tech'] == t) & 
+                        (df_parts['Business Unit'].str.contains('Water Heater', case=False, na=False)) & 
+                        (~df_parts['Business Unit'].str.contains('Units', case=False, na=False))
+                    ]
+                else:
+                    p_sub = df_parts[
+                        (df_parts['Tech'] == t) & 
+                        (df_parts['Business Unit'].str.contains('Simple Installs', case=False, na=False))
+                    ]
                 parts_cost = p_sub['Total Value'].sum()
             else:
                 parts_cost = 0.0
