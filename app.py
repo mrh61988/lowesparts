@@ -233,8 +233,8 @@ if sheets_dict:
     if wh_units_sheet == minmax_sheet: wh_units_sheet = None
     
     df_simple_p = process_parts_df(sheets_dict[simple_sheet], 'Lowes - Simple Installs') if simple_sheet else pd.DataFrame()
-    df_wh_p = process_parts_df(sheets_dict[wh_parts_sheet], 'Lowes - Water Heaters') if wh_parts_sheet else pd.DataFrame()
-    df_wh_u = process_parts_df(sheets_dict[wh_units_sheet], 'Lowes - Water Heaters') if wh_units_sheet else pd.DataFrame()
+    df_wh_p = process_parts_df(sheets_dict[wh_parts_sheet], 'Lowes - Water Heaters (Parts)') if wh_parts_sheet else pd.DataFrame()
+    df_wh_u = process_parts_df(sheets_dict[wh_units_sheet], 'Lowes - Water Heaters (Units)') if wh_units_sheet else pd.DataFrame()
     
     df_parts = pd.concat([df_simple_p, df_wh_p, df_wh_u], ignore_index=True)
     
@@ -479,6 +479,23 @@ with tab_minmax:
                     return bu
                 
                 bu_sheet = row.get('Business Unit_sheet', 'Unknown')
+                if 'water heater' in str(bu_sheet).lower():
+                    item_name_val = row.get('Item Name', '')
+                    item_val = row.get('Item', '')
+                    desc = (str(item_name_val) + " " + str(item_val)).lower()
+                    
+                    # Precise Unit heuristic: Must match full water heater unit descriptions
+                    # and must NOT be an expansion tank or galvanized fitting
+                    is_unit = (
+                        'ao smith' in desc or 
+                        'a.o. smith' in desc or 
+                        re.search(r'\b(30|40|50|75|80)\s*gal\b', desc)
+                    ) and not ('expansion tank' in desc or 'galv' in desc)
+
+                    if is_unit:
+                        return 'Lowes - Water Heaters (Units)'
+                    else:
+                        return 'Lowes - Water Heaters (Parts)'
                 return bu_sheet
 
             merged_minmax['Business Unit'] = merged_minmax.apply(resolve_wh_bu, axis=1)
@@ -609,8 +626,11 @@ with tab_minmax:
         st.subheader("1. Lowes - Simple Installs Min/Max Comparison")
         render_comparison_table('Lowes - Simple Installs')
         
-        st.subheader("2. Lowes - Water Heaters Min/Max Comparison")
-        render_comparison_table('Lowes - Water Heaters')
+        st.subheader("2. Lowes - Water Heaters (Parts) Min/Max Comparison")
+        render_comparison_table('Lowes - Water Heaters (Parts)')
+
+        st.subheader("3. Lowes - Water Heaters (Units) Min/Max Comparison")
+        render_comparison_table('Lowes - Water Heaters (Units)')
 
     else:
         st.info("Google Sheet parts data not loaded.")
