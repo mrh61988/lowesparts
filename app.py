@@ -1312,7 +1312,7 @@ with tab_test:
                 elif p_info['type'] == 'Salary':
                     hr_rate = p_info['annual'] / 2080.0
                 else:
-                    hr_rate = 35.0  # Assumed labor value rate for commission tech wrench time
+                    hr_rate = 35.0
                     
                 est_cost = unbilled_hrs * hr_rate
                 
@@ -1369,32 +1369,54 @@ with tab_test:
     # --- TEST TABLE 6: Regional Branch Benchmarking ---
     st.subheader("6. 📍 Regional Branch Benchmarking (Phoenix vs. Tucson)")
     st.markdown("""
-    Comparative operational scorecard evaluating volume, ticket size, technician output, and replenishment efficiency across regional locations.
+    Comparative operational scorecard evaluating volume, ticket size, technician output, and replenishment efficiency broken down by regional branch location and business unit department.
     """)
 
     reg_rows = []
+    departments = ['Lowes - Simple Installs', 'Lowes - Water Heaters']
+
     for loc in ["Phoenix", "Tucson"]:
         loc_techs = [t for t, p in PAY_STRUCTURE.items() if p["location"] == loc]
         active_tech_count = len(loc_techs)
-        
-        loc_rev = inv_filtered[inv_filtered['Tech Clean'].isin(loc_techs)]['Invoice Total'].sum() if not inv_filtered.empty else 0.0
-        job_cnt = len(jobs_filtered[jobs_filtered['Tech Clean'].isin(loc_techs)]) if not jobs_filtered.empty else 0
-        parts_cost = df_parts[df_parts['Tech'].isin(loc_techs)]['Total Value'].sum() if not df_parts.empty else 0.0
 
-        avg_rev_per_job = (loc_rev / job_cnt) if job_cnt > 0 else 0.0
-        avg_rev_per_tech = (loc_rev / active_tech_count) if active_tech_count > 0 else 0.0
-        mat_ratio = (parts_cost / loc_rev * 100.0) if loc_rev > 0 else 0.0
+        for bu in departments:
+            j_sub = jobs_filtered[(jobs_filtered['Tech Clean'].isin(loc_techs)) & (jobs_filtered['Business Unit'] == bu)] if not jobs_filtered.empty else pd.DataFrame()
+            job_cnt = len(j_sub)
 
-        reg_rows.append({
-            "Branch Location": loc,
-            "Active Technicians": active_tech_count,
-            "Jobs Completed": job_cnt,
-            "Total Revenue": loc_rev,
-            "Avg Revenue / Job": avg_rev_per_job,
-            "Avg Revenue / Tech": avg_rev_per_tech,
-            "Net Warehouse Restocks": parts_cost,
-            "Material % of Revenue": mat_ratio
-        })
+            i_sub = inv_filtered[(inv_filtered['Tech Clean'].isin(loc_techs)) & (inv_filtered['Business Unit Clean'] == bu)] if not inv_filtered.empty else pd.DataFrame()
+            loc_rev = i_sub['Invoice Total'].sum() if not i_sub.empty else 0.0
+
+            if not df_parts.empty:
+                if 'water heater' in bu.lower():
+                    p_sub = df_parts[
+                        (df_parts['Tech'].isin(loc_techs)) & 
+                        (df_parts['Business Unit'].str.contains('Water Heater', case=False, na=False)) & 
+                        (~df_parts['Business Unit'].str.contains('Units', case=False, na=False))
+                    ]
+                else:
+                    p_sub = df_parts[
+                        (df_parts['Tech'].isin(loc_techs)) & 
+                        (df_parts['Business Unit'].str.contains('Simple Installs', case=False, na=False))
+                    ]
+                parts_cost = p_sub['Total Value'].sum()
+            else:
+                parts_cost = 0.0
+
+            avg_rev_per_job = (loc_rev / job_cnt) if job_cnt > 0 else 0.0
+            avg_rev_per_tech = (loc_rev / active_tech_count) if active_tech_count > 0 else 0.0
+            mat_ratio = (parts_cost / loc_rev * 100.0) if loc_rev > 0 else 0.0
+
+            reg_rows.append({
+                "Branch Location": loc,
+                "Department": bu,
+                "Active Technicians": active_tech_count,
+                "Jobs Completed": job_cnt,
+                "Total Revenue": loc_rev,
+                "Avg Revenue / Job": avg_rev_per_job,
+                "Avg Revenue / Tech": avg_rev_per_tech,
+                "Net Warehouse Restocks": parts_cost,
+                "Material % of Revenue": mat_ratio
+            })
 
     df_reg = pd.DataFrame(reg_rows)
     if not df_reg.empty:
