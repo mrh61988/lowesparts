@@ -119,12 +119,11 @@ def map_dept_to_bu(dept):
 
 def parse_job_fixtures(title_str, summary_str=""):
     """
-    Parses fixture quantities from job titles and subtitles.
+    Parses fixture quantities and identifies primary item type from job titles and subtitles.
     Handles fraction ratios (e.g. '1/1' with Faucet and Toilet -> 1 Faucet, 1 Toilet)
     and compound names (e.g. 'Sink/faucet' -> 1 Sink, 1 Faucet).
     """
     text = (str(title_str) + " " + str(summary_str)).lower()
-    # Strip BU tag like :lowes simple installs
     text_clean = re.sub(r':\s*lowes.*', '', text)
     
     fixture_keywords = [
@@ -145,7 +144,6 @@ def parse_job_fixtures(title_str, summary_str=""):
                 break
 
     counts = {}
-    # Check for X/Y ratio e.g., "1/1", "1/2", "2/1"
     fraction_match = re.search(r'\b(\d+)\s*/\s*(\d+)\b', text)
     if fraction_match and len(found_fixtures) == 2:
         x, y = int(fraction_match.group(1)), int(fraction_match.group(2))
@@ -160,7 +158,8 @@ def parse_job_fixtures(title_str, summary_str=""):
             elif std_name in found_fixtures:
                 counts[std_name] = 1
 
-    return counts
+    item_type_label = " / ".join(found_fixtures) if found_fixtures else "Other / Unspecified"
+    return counts, item_type_label
 
 @st.cache_data(ttl=15)
 def fetch_live_google_sheet(url):
@@ -705,29 +704,29 @@ with tab_jobs:
         
         st.dataframe(j_summary.sort_values(by=['Technician', 'Business Unit']), use_container_width=True, hide_index=True)
 
-        # --- ITEM & FIXTURE BREAKDOWN PER JOB TITLE ---
-        st.subheader("Item & Fixture Quantities Breakdown by Job Title")
-        st.caption("Parses fixture counts from Job Titles & Subtitles (e.g. '1/1' with Faucet & Toilet = 1 Faucet, 1 Toilet).")
-
-        jobs_breakdown_rows = []
-        fixture_cols = ['Toilet', 'Faucet', 'Garbage Disposal', 'Sink', 'Water Heater', 'Bidet', 'Dishwasher']
-
+        # --- PARSE JOBS FOR REVENUE & FIXTURE BREAKDOWNS ---
         summary_col = None
         for col in jobs_filtered.columns:
             if any(k in str(col).lower() for k in ['summary', 'subtitle', 'description', 'parent']):
                 summary_col = col
                 break
 
+        jobs_breakdown_rows = []
+        fixture_cols = ['Toilet', 'Faucet', 'Garbage Disposal', 'Sink', 'Water Heater', 'Bidet', 'Dishwasher']
+
         for _, row in jobs_filtered.iterrows():
             title_val = row.get('Title', '')
             summary_val = row.get(summary_col, '') if summary_col else ''
             
-            parsed_counts = parse_job_fixtures(title_val, summary_val)
+            parsed_counts, item_type_label = parse_job_fixtures(title_val, summary_val)
             
+            clean_title = re.sub(r':\s*lowes.*', '', str(title_val), flags=re.IGNORECASE).strip()
+
             row_dict = {
                 'Technician': row['Tech Clean'],
-                'Business Unit': row['Business Unit'],
-                'Job Title': title_val,
+                'Department': row['Business Unit'],
+                'Job Type': clean_title,
+                'Item / Fixture Type': item_type_label,
                 'Invoice Total': row['Invoice Amount']
             }
             for f in fixture_cols:
@@ -737,9 +736,73 @@ with tab_jobs:
 
         df_jobs_parsed = pd.DataFrame(jobs_breakdown_rows)
 
-        # 1. Grouped by Job Title Aggregate
-        job_title_agg = df_jobs_parsed.groupby(['Business Unit', 'Job Title']).agg(
-            Job_Count=('Job Title', 'count'),
+        st.markdown("---")
+        # --- NEW SECTION 1: Total Department Revenue per Job Type & Item Type ---
+        st.subheader("🏢 Total Department Revenue by Job Type & Item Type")
+        dept_rev_summary = df_jobs_parsed.groupby(['Department', 'Job Type', 'Item / Fixture Type']).agg(
+            Job_Count=('Job Type', 'count'),
+            Total_Revenue=('Invoice Total', 'sum'),
+            Avg_Revenue_Per_Job=('Invoice Total', 'mean')
+        ).reset_index().sort_values(by=['Department', 'Total_Revenue'], ascending=[True, False])
+
+        dept_rev_summary['Total_Revenue'] = dept_rev_summary['Total_Revenue'].map('${:,.2f}'.format)
+        dept_rev_summary['Avg_Revenue_Per_Job'] = dept_rev_summary['Avg_Revenue_Per_Job'].map('${:,.2f}'.format)
+        
+        st.dataframe(
+            dept_rev_summary, 
+            use_container_width=True, 
+            hide_index=True,
+            column_config={
+                "Department": st.column_config.TextColumn("Department", width="medium"),
+                "Job Type": st.column_config.TextColumn("Job Type", width="medium"),
+                "Item / Fixture Type": st.column_config.TextColumn("Item / Fixture Type", width="medium"),
+                "Job_Count": st.column_config.NumberColumn("Jobs", width="small"),
+                "Total_Revenue": st.column_config.TextColumn("Total Revenue", width="medium"),
+                "Avg_Revenue_Per_Job": st.column_config.TextColumn("Avg Rev / Job", width="medium")
+            }
+        )
+
+        st.markdown("---")
+        # --- NEW SECTION 2: Per Tech Revenue per Job Type & Item Type ---
+        st.subheader("👷 Technician Revenue Breakdown by Job Type & Item Type")
+        
+        selected_tech_jobs = st.selectbox("Filter by Technician (Optional):", ["All Technicians"] + sorted(VALID_TECHS))
+        
+        df_tech_jobs = df_jobs_parsed.copy()
+        if selected_tech_jobs != "All Technicians":
+            df_tech_jobs = df_tech_jobs[df_tech_jobs['Technician'] == selected_tech_jobs]
+
+        tech_rev_summary = df_tech_jobs.groupby(['Technician', 'Department', 'Job Type', 'Item / Fixture Type']).agg(
+            Job_Count=('Job Type', 'count'),
+            Total_Revenue=('Invoice Total', 'sum'),
+            Avg_Revenue_Per_Job=('Invoice Total', 'mean')
+        ).reset_index().sort_values(by=['Technician', 'Total_Revenue'], ascending=[True, False])
+
+        tech_rev_summary['Total_Revenue'] = tech_rev_summary['Total_Revenue'].map('${:,.2f}'.format)
+        tech_rev_summary['Avg_Revenue_Per_Job'] = tech_rev_summary['Avg_Revenue_Per_Job'].map('${:,.2f}'.format)
+
+        st.dataframe(
+            tech_rev_summary, 
+            use_container_width=True, 
+            hide_index=True,
+            column_config={
+                "Technician": st.column_config.TextColumn("Technician", width="medium"),
+                "Department": st.column_config.TextColumn("Department", width="medium"),
+                "Job Type": st.column_config.TextColumn("Job Type", width="medium"),
+                "Item / Fixture Type": st.column_config.TextColumn("Item / Fixture Type", width="medium"),
+                "Job_Count": st.column_config.NumberColumn("Jobs", width="small"),
+                "Total_Revenue": st.column_config.TextColumn("Total Revenue", width="medium"),
+                "Avg_Revenue_Per_Job": st.column_config.TextColumn("Avg Rev / Job", width="medium")
+            }
+        )
+
+        st.markdown("---")
+        # --- EXISTING FIXTURE QUANTITY BREAKDOWNS ---
+        st.subheader("Item & Fixture Quantities Breakdown by Job Title")
+        st.caption("Parses fixture counts from Job Titles & Subtitles (e.g. '1/1' with Faucet & Toilet = 1 Faucet, 1 Toilet).")
+
+        job_title_agg = df_jobs_parsed.groupby(['Department', 'Job Type']).agg(
+            Job_Count=('Job Type', 'count'),
             Total_Billed=('Invoice Total', 'sum'),
             Toilets=('Toilet', 'sum'),
             Faucets=('Faucet', 'sum'),
@@ -748,7 +811,7 @@ with tab_jobs:
             Water_Heaters=('Water Heater', 'sum'),
             Bidets=('Bidet', 'sum'),
             Dishwashers=('Dishwasher', 'sum')
-        ).reset_index().sort_values(by=['Business Unit', 'Job_Count'], ascending=[True, False])
+        ).reset_index().sort_values(by=['Department', 'Job_Count'], ascending=[True, False])
 
         job_title_agg['Total_Billed'] = job_title_agg['Total_Billed'].map('${:,.2f}'.format)
         
@@ -757,22 +820,22 @@ with tab_jobs:
             use_container_width=True, 
             hide_index=True,
             column_config={
-                "Job Title": st.column_config.TextColumn("Job Title", width="large"),
+                "Department": st.column_config.TextColumn("Department", width="medium"),
+                "Job Type": st.column_config.TextColumn("Job Title", width="large"),
                 "Job_Count": st.column_config.NumberColumn("Jobs", width="small"),
                 "Total_Billed": st.column_config.TextColumn("Total Billed", width="medium"),
             }
         )
 
-        # 2. Aggregated Fixtures Per Technician
         st.subheader("Total Installed Fixtures Breakdown by Technician")
-        tech_fixture_agg = df_jobs_parsed.groupby(['Technician', 'Business Unit']).agg(
-            Total_Jobs=('Job Title', 'count'),
+        tech_fixture_agg = df_jobs_parsed.groupby(['Technician', 'Department']).agg(
+            Total_Jobs=('Job Type', 'count'),
             Toilets=('Toilet', 'sum'),
             Faucets=('Faucet', 'sum'),
             Disposals=('Garbage Disposal', 'sum'),
             Sinks=('Sink', 'sum'),
             Water_Heaters=('Water Heater', 'sum')
-        ).reset_index().sort_values(by=['Business Unit', 'Technician'])
+        ).reset_index().sort_values(by=['Department', 'Technician'])
 
         st.dataframe(tech_fixture_agg, use_container_width=True, hide_index=True)
 
