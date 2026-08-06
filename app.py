@@ -50,6 +50,19 @@ def get_first_valid_tech(tech_str):
             return norm
     return None
 
+def parse_min_max(val):
+    """Parses warehouse min/max formatted string like '70 / 140' or '4 / 8'."""
+    val_str = str(val).strip()
+    if '/' in val_str:
+        parts = [p.strip() for p in val_str.split('/')]
+        c_min = parts[0] if parts[0] not in ['—', '-', '', 'nan', 'None'] else '0'
+        c_max = parts[1] if len(parts) > 1 and parts[1] not in ['—', '-', '', 'nan', 'None'] else '0'
+        try:
+            return int(float(c_min)), int(float(c_max))
+        except:
+            return 0, 0
+    return 0, 0
+
 @st.cache_data
 def load_google_sheet(url):
     """Reads a public Google Sheet URL into a dictionary of DataFrames."""
@@ -127,14 +140,37 @@ TARGET_BUS = ['Lowes - Simple Installs', 'Lowes - Water Heaters']
 # 1. Parts Data from Google Sheets
 sheets_dict = load_google_sheet(sheet_url)
 df_parts = pd.DataFrame()
+df_current_minmax = pd.DataFrame()
+
 if sheets_dict:
     sheet_names = list(sheets_dict.keys())
+    
+    # Identify parts sheets
     simple_sheet = sheet_names[0] if len(sheet_names) > 0 else None
     wh_sheet = sheet_names[1] if len(sheet_names) > 1 else simple_sheet
     
     df_simple_p = process_parts_df(sheets_dict[simple_sheet], 'Lowes - Simple Installs') if simple_sheet else pd.DataFrame()
     df_wh_p = process_parts_df(sheets_dict[wh_sheet], 'Lowes - Water Heaters') if wh_sheet else pd.DataFrame()
     df_parts = pd.concat([df_simple_p, df_wh_p], ignore_index=True)
+    
+    # Identify current Min/Max sheet (e.g. "Nexsys Min/Max")
+    minmax_sheet = None
+    for name in sheet_names:
+        if 'min' in name.lower() and 'max' in name.lower():
+            minmax_sheet = name
+            break
+            
+    if minmax_sheet and minmax_sheet in sheets_dict:
+        raw_minmax = sheets_dict[minmax_sheet].copy()
+        if 'SKU' in raw_minmax.columns and 'Warehouse Min/Max' in raw_minmax.columns:
+            raw_minmax['SKU'] = raw_minmax['SKU'].astype(str).str.strip()
+            parsed_mins_maxs = raw_minmax['Warehouse Min/Max'].apply(parse_min_max).tolist()
+            raw_minmax[['Current Min', 'Current Max']] = parsed_mins_maxs
+            if 'Qty' in raw_minmax.columns:
+                raw_minmax['Current On Hand'] = pd.to_numeric(raw_minmax['Qty'], errors='coerce').fillna(0).astype(int)
+            else:
+                raw_minmax['Current On Hand'] = 0
+            df_current_minmax = raw_minmax
 
 # 2. Jobs Data
 raw_jobs_df = read_uploaded_csv(uploaded_jobs)
@@ -222,7 +258,7 @@ if ts_df is not None and not ts_df.empty:
 tab_exec, tab_parts, tab_minmax, tab_jobs, tab_inv, tab_ts, tab_test = st.tabs([
     "📈 Executive Summary Table",
     "⚙️ Parts Usage",
-    "📦 Warehouse Min/Max Targets",
+    "📦 Warehouse Min/Max Comparison",
     "📋 Jobs Analysis",
     "💳 Invoices Analysis",
     "⏱️ Timesheets Analysis",
@@ -299,59 +335,113 @@ with tab_parts:
     else:
         st.info("Google Sheet parts data not loaded.")
 
-# --- TAB 3: WAREHOUSE MIN/MAX TARGETS ---
+# --- TAB 3: WAREHOUSE MIN/MAX COMPARISON ---
 with tab_minmax:
-    st.header("📦 Warehouse Min/Max Inventory Recommendations")
+    st.header("📦 Warehouse Min/Max Analysis & Comparison")
     st.markdown("""
-    Targeting **1.5 weeks of shelf stock** based on historical replenishment consumption (July 2026 / 4.43 weeks).
-    - **Suggested Min (Reorder Point / 1.0 Wk):** Level that triggers supplier order.
-    - **Target Stock (Ideal Shelf Level / 1.5 Wks):** Ideal quantity on hand.
-    - **Suggested Max (Order Up To / 2.0 Wks):** Ceiling for shelf stock.
+    Comparison of **Current Warehouse Min/Max settings** (from `Nexsys Min/Max` sheet) against **Suggested 1.5-Week Inventory Targets** 
+    calculated from historical demand (July 2026 / 4.43 weeks).
+    - **Current Min / Max:** Active warehouse min/max levels in Google Sheets.
+    - **Suggested Min (1.0 Wk):** Reorder point equal to 1 week of demand.
+    - **Target Stock (1.5 Wks):** Recommended shelf stock level.
+    - **Suggested Max (2.0 Wks):** Order-up-to ceiling level.
     """)
     
     if not df_parts.empty:
         total_weeks = 31.0 / 7.0
         
+        # Calculate item-level demand
         item_usage = df_parts.groupby(['Business Unit', 'SKU', 'Item']).agg(
             Total_Net_Qty=('Qty', 'sum'),
             Total_Net_Cost=('Total Value', 'sum')
         ).reset_index()
         
+        item_usage['SKU'] = item_usage['SKU'].astype(str).str.strip()
         item_usage['Weekly_Avg_Qty'] = item_usage['Total_Net_Qty'] / total_weeks
-        item_usage['Min_Stock_Qty'] = np.ceil(item_usage['Weekly_Avg_Qty'] * 1.0).clip(lower=1)
-        item_usage['Target_Stock_Qty'] = np.ceil(item_usage['Weekly_Avg_Qty'] * 1.5)
-        item_usage['Max_Stock_Qty'] = np.maximum(np.ceil(item_usage['Weekly_Avg_Qty'] * 2.0), item_usage['Min_Stock_Qty'] + 1)
+        item_usage['Min_Stock_Qty'] = np.ceil(item_usage['Weekly_Avg_Qty'] * 1.0).clip(lower=1).astype(int)
+        item_usage['Target_Stock_Qty'] = np.ceil(item_usage['Weekly_Avg_Qty'] * 1.5).astype(int)
+        item_usage['Max_Stock_Qty'] = np.maximum(np.ceil(item_usage['Weekly_Avg_Qty'] * 2.0), item_usage['Min_Stock_Qty'] + 1).astype(int)
         
-        def render_minmax_table(bu_name):
-            bu_df = item_usage[item_usage['Business Unit'] == bu_name].copy()
+        # Merge with Current Min/Max Sheet if loaded
+        if not df_current_minmax.empty:
+            merged_minmax = pd.merge(
+                item_usage, 
+                df_current_minmax[['SKU', 'Current On Hand', 'Current Min', 'Current Max']], 
+                on='SKU', 
+                how='left'
+            ).fillna({'Current On Hand': 0, 'Current Min': 0, 'Current Max': 0})
+        else:
+            merged_minmax = item_usage.copy()
+            merged_minmax['Current On Hand'] = 0
+            merged_minmax['Current Min'] = 0
+            merged_minmax['Current Max'] = 0
+
+        merged_minmax['Current Min'] = merged_minmax['Current Min'].astype(int)
+        merged_minmax['Current Max'] = merged_minmax['Current Max'].astype(int)
+        merged_minmax['Current On Hand'] = merged_minmax['Current On Hand'].astype(int)
+
+        # Recommendation Logic
+        def get_minmax_recommendation(row):
+            c_min, c_max = row['Current Min'], row['Current Max']
+            s_min, s_max = row['Min_Stock_Qty'], row['Max_Stock_Qty']
+            
+            if c_min == 0 and c_max == 0:
+                return "⚠️ Set Min/Max"
+            
+            d_min = s_min - c_min
+            d_max = s_max - c_max
+            
+            if d_min > 0 and d_max > 0:
+                return f"⬆️ Increase Min (+{d_min}) & Max (+{d_max})"
+            elif d_min < 0 and d_max < 0:
+                return f"⬇️ Decrease Min ({d_min}) & Max ({d_max})"
+            elif d_min > 0:
+                return f"⬆️ Increase Min (+{d_min})"
+            elif d_min < 0:
+                return f"⬇️ Decrease Min ({d_min})"
+            elif d_max > 0:
+                return f"⬆️ Increase Max (+{d_max})"
+            elif d_max < 0:
+                return f"⬇️ Decrease Max ({d_max})"
+            else:
+                return "🟢 On Target"
+
+        merged_minmax['Action / Recommendation'] = merged_minmax.apply(get_minmax_recommendation, axis=1)
+
+        def render_comparison_table(bu_name):
+            bu_df = merged_minmax[merged_minmax['Business Unit'] == bu_name].copy()
             if not bu_df.empty:
                 bu_df.sort_values(by='Target_Stock_Qty', ascending=False, inplace=True)
                 bu_df.rename(columns={
                     'SKU': 'SKU',
                     'Item': 'Item Description',
-                    'Total_Net_Qty': 'July Net Usage Qty',
+                    'Total_Net_Qty': 'July Net Usage',
                     'Weekly_Avg_Qty': 'Weekly Avg Demand',
+                    'Current On Hand': 'Current On Hand',
+                    'Current Min': 'Current Min',
                     'Min_Stock_Qty': 'Suggested Min (1.0 Wk)',
-                    'Target_Stock_Qty': 'Target Stock (1.5 Wks)',
-                    'Max_Stock_Qty': 'Suggested Max (2.0 Wks)'
+                    'Current Max': 'Current Max',
+                    'Max_Stock_Qty': 'Suggested Max (2.0 Wks)',
+                    'Target_Stock_Qty': 'Target Stock (1.5 Wks)'
                 }, inplace=True)
                 
                 bu_df['Weekly Avg Demand'] = bu_df['Weekly Avg Demand'].map('{:.2f}'.format)
-                bu_df['July Net Usage Qty'] = bu_df['July Net Usage Qty'].astype(int)
-                bu_df['Suggested Min (1.0 Wk)'] = bu_df['Suggested Min (1.0 Wk)'].astype(int)
-                bu_df['Target Stock (1.5 Wks)'] = bu_df['Target Stock (1.5 Wks)'].astype(int)
-                bu_df['Suggested Max (2.0 Wks)'] = bu_df['Suggested Max (2.0 Wks)'].astype(int)
                 
-                show_cols = ['SKU', 'Item Description', 'July Net Usage Qty', 'Weekly Avg Demand', 'Suggested Min (1.0 Wk)', 'Target Stock (1.5 Wks)', 'Suggested Max (2.0 Wks)']
+                show_cols = [
+                    'SKU', 'Item Description', 'July Net Usage', 'Weekly Avg Demand', 
+                    'Current On Hand', 'Current Min', 'Suggested Min (1.0 Wk)', 
+                    'Current Max', 'Suggested Max (2.0 Wks)', 'Target Stock (1.5 Wks)', 
+                    'Action / Recommendation'
+                ]
                 st.dataframe(bu_df[show_cols], use_container_width=True, hide_index=True)
             else:
                 st.info(f"No parts usage data available for {bu_name}.")
 
-        st.subheader("1. Lowes - Simple Installs Inventory Targets")
-        render_minmax_table('Lowes - Simple Installs')
+        st.subheader("1. Lowes - Simple Installs Min/Max Comparison")
+        render_comparison_table('Lowes - Simple Installs')
         
-        st.subheader("2. Lowes - Water Heaters Inventory Targets")
-        render_minmax_table('Lowes - Water Heaters')
+        st.subheader("2. Lowes - Water Heaters Min/Max Comparison")
+        render_comparison_table('Lowes - Water Heaters')
     else:
         st.info("Google Sheet parts data not loaded.")
 
