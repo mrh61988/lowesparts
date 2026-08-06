@@ -721,83 +721,75 @@ with tab_test:
     """)
 
     st.markdown("---")
-    # --- TEST TABLE 1: Interactive Tech Item-Level Drilldown with Category Filter ---
-    st.subheader("1. Interactive Technician Item Usage & Revenue Drilldown (Excludes AO Smith Water Heaters)")
+    # --- TEST TABLE 1: Side-by-Side Technician Comparison Drilldown ---
+    st.subheader("1. Side-by-Side Technician Item Usage & Revenue Comparison (Excludes AO Smith Water Heaters)")
     
-    col_sel1, col_sel2 = st.columns(2)
-    with col_sel1:
-        selected_tech = st.selectbox("Select Technician to Inspect:", sorted(VALID_TECHS))
-    with col_sel2:
-        selected_bu_label = st.selectbox(
-            "Filter Category / Business Unit:",
-            ["All (Simple Installs & WH Parts)", "Simple Installs", "Water Heater Parts"]
-        )
+    selected_bu_label = st.selectbox(
+        "Filter Category / Business Unit:",
+        ["All (Simple Installs & WH Parts)", "Simple Installs", "Water Heater Parts"]
+    )
 
-    if not df_parts.empty:
-        # Filter out AO Smith water heater units
-        is_ao_smith = df_parts['Item'].astype(str).str.lower().str.contains(r'a\.?o\.?\s*smith', regex=True, na=False)
-        df_parts_clean = df_parts[~is_ao_smith].copy()
+    col_tech_a, col_tech_b = st.columns(2)
 
-        # Apply Category/BU Filter
-        if selected_bu_label == "Simple Installs":
-            p_tech = df_parts_clean[(df_parts_clean['Tech'] == selected_tech) & (df_parts_clean['Business Unit'].str.contains('Simple Installs', case=False, na=False))]
-            
-            # Category-specific Revenue & Jobs
-            if not inv_filtered.empty:
-                tech_rev = inv_filtered[(inv_filtered['Tech Clean'] == selected_tech) & (inv_filtered['Business Unit Clean'].str.contains('Simple Installs', case=False, na=False))]['Invoice Total'].sum()
+    def render_tech_drilldown(tech_name, bu_filter_label, col_container):
+        with col_container:
+            st.markdown(f"### 👤 {tech_name}")
+            if not df_parts.empty:
+                is_ao_smith = df_parts['Item'].astype(str).str.lower().str.contains(r'a\.?o\.?\s*smith', regex=True, na=False)
+                df_parts_clean = df_parts[~is_ao_smith].copy()
+
+                if bu_filter_label == "Simple Installs":
+                    p_tech = df_parts_clean[(df_parts_clean['Tech'] == tech_name) & (df_parts_clean['Business Unit'].str.contains('Simple Installs', case=False, na=False))]
+                    tech_rev = inv_filtered[(inv_filtered['Tech Clean'] == tech_name) & (inv_filtered['Business Unit Clean'].str.contains('Simple Installs', case=False, na=False))]['Invoice Total'].sum() if not inv_filtered.empty else 0.0
+                    tech_jobs = len(jobs_filtered[(jobs_filtered['Tech Clean'] == tech_name) & (jobs_filtered['Business Unit'].str.contains('Simple Installs', case=False, na=False))]) if not jobs_filtered.empty else 0
+
+                elif bu_filter_label == "Water Heater Parts":
+                    p_tech = df_parts_clean[(df_parts_clean['Tech'] == tech_name) & (df_parts_clean['Business Unit'].str.contains('Water Heater', case=False, na=False)) & (~df_parts_clean['Business Unit'].str.contains('Units', case=False, na=False))]
+                    tech_rev = inv_filtered[(inv_filtered['Tech Clean'] == tech_name) & (inv_filtered['Business Unit Clean'].str.contains('Water Heater', case=False, na=False))]['Invoice Total'].sum() if not inv_filtered.empty else 0.0
+                    tech_jobs = len(jobs_filtered[(jobs_filtered['Tech Clean'] == tech_name) & (jobs_filtered['Business Unit'].str.contains('Water Heater', case=False, na=False))]) if not jobs_filtered.empty else 0
+
+                else: # All (Simple Installs & WH Parts)
+                    p_tech = df_parts_clean[(df_parts_clean['Tech'] == tech_name) & (~df_parts_clean['Business Unit'].str.contains('Units', case=False, na=False))]
+                    tech_rev = tech_metrics[tech_name]['Revenue']
+                    tech_jobs = tech_metrics[tech_name]['Jobs']
+
+                tech_parts_total = p_tech['Total Value'].sum()
+
+                mc1, mc2 = st.columns(2)
+                mc1.metric("Jobs Completed", tech_jobs)
+                mc2.metric("Attributed Revenue", f"${tech_rev:,.2f}")
+
+                mc3, mc4 = st.columns(2)
+                mc3.metric("Net Parts Cost", f"${tech_parts_total:,.2f}")
+                mc4.metric("Material % of Rev", f"{(tech_parts_total / tech_rev * 100) if tech_rev > 0 else 0:.2f}%")
+
+                if not p_tech.empty:
+                    tech_item_summary = p_tech.groupby(['SKU', 'Item']).agg(
+                        Qty_Used=('Qty', 'sum'),
+                        Total_Cost=('Total Value', 'sum')
+                    ).reset_index().sort_values(by='Total_Cost', ascending=False)
+
+                    tech_item_summary['Cost % Rev'] = (
+                        (tech_item_summary['Total_Cost'] / tech_rev * 100).map('{:.2f}%'.format)
+                        if tech_rev > 0 else "0.00%"
+                    )
+                    tech_item_summary['Total Cost'] = tech_item_summary['Total_Cost'].map('${:,.2f}'.format)
+                    tech_item_summary.rename(columns={'Qty_Used': 'Qty'}, inplace=True)
+
+                    st.dataframe(tech_item_summary[['SKU', 'Item', 'Qty', 'Total Cost', 'Cost % Rev']], use_container_width=True, hide_index=True)
+                else:
+                    st.info(f"No parts usage logged for {tech_name} under {bu_filter_label}.")
             else:
-                tech_rev = 0.0
-                
-            if not jobs_filtered.empty:
-                tech_jobs = len(jobs_filtered[(jobs_filtered['Tech Clean'] == selected_tech) & (jobs_filtered['Business Unit'].str.contains('Simple Installs', case=False, na=False))])
-            else:
-                tech_jobs = 0
+                st.info("Parts usage data not loaded.")
 
-        elif selected_bu_label == "Water Heater Parts":
-            p_tech = df_parts_clean[(df_parts_clean['Tech'] == selected_tech) & (df_parts_clean['Business Unit'].str.contains('Water Heater', case=False, na=False)) & (~df_parts_clean['Business Unit'].str.contains('Units', case=False, na=False))]
-            
-            # Category-specific Revenue & Jobs
-            if not inv_filtered.empty:
-                tech_rev = inv_filtered[(inv_filtered['Tech Clean'] == selected_tech) & (inv_filtered['Business Unit Clean'].str.contains('Water Heater', case=False, na=False))]['Invoice Total'].sum()
-            else:
-                tech_rev = 0.0
-                
-            if not jobs_filtered.empty:
-                tech_jobs = len(jobs_filtered[(jobs_filtered['Tech Clean'] == selected_tech) & (jobs_filtered['Business Unit'].str.contains('Water Heater', case=False, na=False))])
-            else:
-                tech_jobs = 0
+    with col_tech_a:
+        tech_a = st.selectbox("Select Primary Technician (Tech A):", sorted(VALID_TECHS), index=sorted(VALID_TECHS).index("Matt Schlosser") if "Matt Schlosser" in VALID_TECHS else 0)
+        render_tech_drilldown(tech_a, selected_bu_label, col_tech_a)
 
-        else: # All (Simple Installs & WH Parts)
-            p_tech = df_parts_clean[(df_parts_clean['Tech'] == selected_tech) & (~df_parts_clean['Business Unit'].str.contains('Units', case=False, na=False))]
-            tech_rev = tech_metrics[selected_tech]['Revenue']
-            tech_jobs = tech_metrics[selected_tech]['Jobs']
-
-        tech_parts_total = p_tech['Total Value'].sum()
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Jobs Completed", tech_jobs)
-        c2.metric("Attributed Revenue", f"${tech_rev:,.2f}")
-        c3.metric("Net Parts Cost", f"${tech_parts_total:,.2f}")
-        c4.metric("Material % of Revenue", f"{(tech_parts_total / tech_rev * 100) if tech_rev > 0 else 0:.2f}%")
-
-        if not p_tech.empty:
-            tech_item_summary = p_tech.groupby(['SKU', 'Item']).agg(
-                Qty_Used=('Qty', 'sum'),
-                Total_Cost=('Total Value', 'sum')
-            ).reset_index().sort_values(by='Total_Cost', ascending=False)
-
-            tech_item_summary['Cost % of Tech Revenue'] = (
-                (tech_item_summary['Total_Cost'] / tech_rev * 100).map('{:.2f}%'.format)
-                if tech_rev > 0 else "0.00%"
-            )
-            tech_item_summary['Total_Cost'] = tech_item_summary['Total_Cost'].map('${:,.2f}'.format)
-            tech_item_summary.rename(columns={'Qty_Used': 'Qty Used', 'Total_Cost': 'Total Cost'}, inplace=True)
-
-            st.dataframe(tech_item_summary, use_container_width=True, hide_index=True)
-        else:
-            st.info(f"No parts usage logged for {selected_tech} under {selected_bu_label}.")
-    else:
-        st.info("Parts usage data not loaded.")
+    with col_tech_b:
+        default_b_idx = sorted(VALID_TECHS).index("Erik Tange") if "Erik Tange" in VALID_TECHS else (1 if len(VALID_TECHS) > 1 else 0)
+        tech_b = st.selectbox("Select Comparison Technician (Tech B):", sorted(VALID_TECHS), index=default_b_idx)
+        render_tech_drilldown(tech_b, selected_bu_label, col_tech_b)
 
     st.markdown("---")
     # --- TEST TABLE 2: Top Consumed Items per Technician Summary (Excludes AO Smith Water Heaters) ---
