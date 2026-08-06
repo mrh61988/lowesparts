@@ -7,15 +7,16 @@ st.title("NexSys Operations & Financial Analyzer")
 st.markdown("Detailed tabular analysis across Parts Usage, Jobs, Invoices, Timesheets, Payroll, and **Replenishment Efficiency** for **Simple Installs** and **Water Heaters**.")
 
 # --- VALID TECHNICIANS LIST & PAY STRUCTURE ---
+# Rates are retained in backend for gross pay calculations, but hidden from UI tables
 PAY_STRUCTURE = {
-    "Nate Smith": {"type": "Hourly", "rate": 22.50, "details": "$22.50/hr", "location": "Phoenix"},
-    "Bill Black": {"type": "Hourly", "rate": 25.00, "details": "$25.00/hr", "location": "Phoenix"},
-    "Sean Marble": {"type": "Salary", "annual": 70000.0, "details": "$70,000/yr ($5,833.33/mo)", "location": "Phoenix"},
-    "Tanner LaForge": {"type": "Hourly", "rate": 25.00, "details": "$25.00/hr", "location": "Phoenix"},
-    "Erik Tange": {"type": "Commission", "rate": 0.34, "details": "34% of Invoice Revenue", "location": "Phoenix"},
-    "Bryan Pickett": {"type": "Commission", "rate": 0.34, "details": "34% of Invoice Revenue", "location": "Phoenix"},
-    "Matt Schlosser": {"type": "Hourly", "rate": 25.00, "details": "$25.00/hr", "location": "Phoenix"},
-    "Mathew Hodges": {"type": "Salary", "annual": 65000.0, "details": "$65,000/yr ($5,416.67/mo)", "location": "Tucson"}
+    "Nate Smith": {"type": "Hourly", "rate": 22.50, "location": "Phoenix"},
+    "Bill Black": {"type": "Hourly", "rate": 25.00, "location": "Phoenix"},
+    "Sean Marble": {"type": "Salary", "annual": 70000.0, "location": "Phoenix"},
+    "Tanner LaForge": {"type": "Hourly", "rate": 25.00, "location": "Phoenix"},
+    "Erik Tange": {"type": "Commission", "rate": 0.34, "location": "Phoenix"},
+    "Bryan Pickett": {"type": "Commission", "rate": 0.34, "location": "Phoenix"},
+    "Matt Schlosser": {"type": "Hourly", "rate": 25.00, "location": "Phoenix"},
+    "Mathew Hodges": {"type": "Salary", "annual": 65000.0, "location": "Tucson"}
 }
 
 VALID_TECHS = list(PAY_STRUCTURE.keys())
@@ -125,12 +126,12 @@ uploaded_timesheets = st.sidebar.file_uploader("Upload 'timesheets.csv'", type=[
 
 TARGET_BUS = ['Lowes - Simple Installs', 'Lowes - Water Heaters']
 
-# Display active tech pay structure & location in sidebar
+# Display active tech roster in sidebar (without showing pay rates)
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 👷 Tech Roster & Pay Structure")
+st.sidebar.markdown("### 👷 Tech Roster")
 for t, p in PAY_STRUCTURE.items():
     loc_tag = "🌵 Tucson" if p["location"] == "Tucson" else "📍 Phoenix"
-    st.sidebar.markdown(f"**{t}** ({loc_tag}): {p['details']}")
+    st.sidebar.markdown(f"**{t}** ({loc_tag})")
 
 # --- PRE-PROCESS ALL DATA ONCE ---
 # 1. Parts Data from Google Sheets
@@ -230,7 +231,7 @@ tab_exec, tab_pay, tab_parts, tab_jobs, tab_inv, tab_ts, tab_test = st.tabs([
 # --- TAB 1: EXECUTIVE SUMMARY TABLE ---
 with tab_exec:
     st.header("Technician Level Master Summary Table")
-    st.markdown("Consolidated view for active technicians combining net parts cost, job counts, invoice revenue, timesheet hours, and calculated pay.")
+    st.markdown("Consolidated view for active technicians combining net parts cost, job counts, invoice revenue, timesheet hours, and calculated gross pay.")
     
     exec_rows = []
     for t in sorted(VALID_TECHS):
@@ -238,7 +239,7 @@ with tab_exec:
         p_info = PAY_STRUCTURE[t]
         p_type = p_info["type"]
         
-        # Calculate Pay
+        # Calculate Gross Pay
         if p_type == "Hourly":
             pay = m["Hours"] * p_info["rate"]
         elif p_type == "Commission":
@@ -249,7 +250,6 @@ with tab_exec:
         exec_rows.append({
             "Technician": t,
             "Location": p_info["location"],
-            "Pay Model": p_info["details"],
             "Jobs Completed": m["Jobs"],
             "Logged Hours": m["Hours"],
             "Net Parts Cost": m["PartsCost"],
@@ -268,8 +268,8 @@ with tab_exec:
 
 # --- TAB 2: PAYROLL ANALYSIS ---
 with tab_pay:
-    st.header("Payroll & Compensation Breakdown")
-    st.markdown("Detailed breakdown of how pay is calculated for each technician based on their compensation terms.")
+    st.header("Payroll & Gross Pay Summary")
+    st.markdown("Gross pay totals and labor ratios calculated for each technician.")
     
     pay_rows = []
     for t in sorted(VALID_TECHS):
@@ -279,21 +279,17 @@ with tab_pay:
         
         if p_type == "Hourly":
             pay = m["Hours"] * p_info["rate"]
-            calc_note = f"{m['Hours']:.2f} hrs × ${p_info['rate']:.2f}/hr"
         elif p_type == "Commission":
             pay = m["Revenue"] * p_info["rate"]
-            calc_note = f"{p_info['rate']*100:.0f}% of ${m['Revenue']:,.2f} revenue"
         elif p_type == "Salary":
             pay = p_info["annual"] / 12.0
-            calc_note = f"Monthly Salary (${p_info['annual']:,.0f}/12)"
             
         labor_pct = (pay / m["Revenue"] * 100) if m["Revenue"] > 0 else 0.0
 
         pay_rows.append({
             "Technician": t,
             "Pay Type": p_type,
-            "Compensation Terms": p_info["details"],
-            "Calculation Detail": calc_note,
+            "Logged Hours": m["Hours"],
             "Attributed Revenue": m["Revenue"],
             "Gross Pay": pay,
             "Labor % of Revenue": labor_pct
@@ -301,6 +297,7 @@ with tab_pay:
 
     pay_df = pd.DataFrame(pay_rows)
     display_pay = pay_df.copy()
+    display_pay["Logged Hours"] = display_pay["Logged Hours"].map('{:,.2f} hrs'.format)
     display_pay["Attributed Revenue"] = display_pay["Attributed Revenue"].map('${:,.2f}'.format)
     display_pay["Gross Pay"] = display_pay["Gross Pay"].map('${:,.2f}'.format)
     display_pay["Labor % of Revenue"] = display_pay["Labor % of Revenue"].map('{:.1f}%'.format)
@@ -432,14 +429,12 @@ with tab_test:
     def get_bu_efficiency_table(bu_name, max_material_ratio_threshold):
         bu_rows = []
         for t in sorted(VALID_TECHS):
-            # Calculate Tech BU Parts
             if not df_parts.empty:
                 p_sub = df_parts[(df_parts['Tech'] == t) & (df_parts['Business Unit'] == bu_name)]
                 parts_cost = p_sub['Total Value'].sum()
             else:
                 parts_cost = 0.0
 
-            # Calculate Tech BU Jobs Count
             j_count = 0
             if not jobs_filtered.empty:
                 j_sub = jobs_filtered[jobs_filtered['Business Unit'] == bu_name]
@@ -448,7 +443,6 @@ with tab_test:
                     if t in t_list:
                         j_count += 1
 
-            # Calculate Tech BU Revenue
             rev = 0.0
             if not inv_filtered.empty:
                 i_sub = inv_filtered[inv_filtered['Business Unit Clean'] == bu_name]
@@ -460,7 +454,6 @@ with tab_test:
             cost_per_job = (parts_cost / j_count) if j_count > 0 else 0.0
             mat_pct = (parts_cost / rev * 100) if rev > 0 else 0.0
 
-            # Operational Status Flag
             if t == "Mathew Hodges":
                 flag = "🌵 Tucson Tech (No Warehouse Restocks)"
             elif j_count > 0 and parts_cost == 0:
