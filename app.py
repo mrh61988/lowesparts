@@ -799,13 +799,14 @@ with tab_jobs:
         )
 
         st.markdown("---")
-        # --- FIXTURE QUANTITY BREAKDOWNS ---
+        # --- FIXTURE QUANTITY BREAKDOWNS (UPDATED WITH REVENUE PER JOB) ---
         st.subheader("Item & Fixture Quantities Breakdown by Job Title")
-        st.caption("Parses fixture counts from Job Titles & Subtitles (e.g. '1/1' with Faucet & Toilet = 1 Faucet, 1 Toilet).")
+        st.caption("Parses fixture counts from Job Titles & Subtitles (e.g. '1/1' with Faucet & Toilet = 1 Faucet, 1 Toilet). Includes average revenue per job.")
 
         job_title_agg = df_jobs_parsed.groupby(['Department', 'Job Type']).agg(
             Job_Count=('Job Type', 'count'),
             Total_Billed=('Invoice Total', 'sum'),
+            Avg_Revenue_Per_Job=('Invoice Total', 'mean'),
             Toilets=('Toilet', 'sum'),
             Faucets=('Faucet', 'sum'),
             Disposals=('Garbage Disposal', 'sum'),
@@ -815,16 +816,23 @@ with tab_jobs:
             Dishwashers=('Dishwasher', 'sum')
         ).reset_index().sort_values(by=['Department', 'Job_Count'], ascending=[True, False])
 
+        job_title_agg['Revenue Per Job'] = job_title_agg['Avg_Revenue_Per_Job'].map('${:,.2f}'.format)
         job_title_agg['Total_Billed'] = job_title_agg['Total_Billed'].map('${:,.2f}'.format)
+
+        show_title_cols = [
+            'Department', 'Job Type', 'Job_Count', 'Revenue Per Job', 'Total_Billed',
+            'Toilets', 'Faucets', 'Disposals', 'Sinks', 'Water_Heaters', 'Bidets', 'Dishwashers'
+        ]
         
         st.dataframe(
-            job_title_agg, 
+            job_title_agg[show_title_cols], 
             use_container_width=True, 
             hide_index=True,
             column_config={
                 "Department": st.column_config.TextColumn("Department", width="medium"),
                 "Job Type": st.column_config.TextColumn("Job Title", width="large"),
                 "Job_Count": st.column_config.NumberColumn("Jobs", width="small"),
+                "Revenue Per Job": st.column_config.TextColumn("Revenue / Job", width="medium"),
                 "Total_Billed": st.column_config.TextColumn("Total Billed", width="medium"),
             }
         )
