@@ -1,8 +1,9 @@
 import streamlit as st
 import pandas as pd
+import re
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="NexSys Operations & Financial Analyzer", layout="wide")
+st.set_page_config(page_title="NexSys Operations & Payroll Analyzer", layout="wide")
 st.title("NexSys Operations & Financial Analyzer")
 st.markdown("Detailed tabular analysis across Parts Usage, Jobs, Invoices, Timesheets, and **Replenishment Efficiency** for **Simple Installs** and **Water Heaters**.")
 
@@ -22,16 +23,18 @@ VALID_TECHS = list(PAY_STRUCTURE.keys())
 
 # --- HELPER FUNCTIONS ---
 def normalize_single_tech(name):
-    """Normalizes fleet, contractor, or user names to standard tech names."""
+    """Normalizes fleet, contractor, or user names using exact word boundaries."""
     name_str = str(name).strip()
-    if "Bill" in name_str: return "Bill Black"
-    if "Bryan" in name_str: return "Bryan Pickett"
-    if "Erik" in name_str: return "Erik Tange"
-    if "Matt's" in name_str or "Matt S" in name_str or "Matt Schlosser" in name_str: return "Matt Schlosser"
-    if "Mathew" in name_str or "Hodges" in name_str: return "Mathew Hodges"
-    if "Nate" in name_str or "Nathan" in name_str: return "Nate Smith"
-    if "Sean" in name_str: return "Sean Marble"
-    if "Tanner" in name_str: return "Tanner LaForge"
+    name_lower = name_str.lower()
+    
+    if re.search(r'\bbill\b', name_lower): return "Bill Black"
+    if re.search(r'\bbryan\b', name_lower): return "Bryan Pickett"
+    if re.search(r'\berik\b', name_lower): return "Erik Tange"
+    if re.search(r'\bmatt\b', name_lower) and not re.search(r'\bmathew\b', name_lower): return "Matt Schlosser"
+    if re.search(r'\bmathew\b', name_lower) or re.search(r'\bhodges\b', name_lower): return "Mathew Hodges"
+    if re.search(r'\bnate\b', name_lower) or re.search(r'\bnathan\b', name_lower): return "Nate Smith"
+    if re.search(r'\bsean\b', name_lower): return "Sean Marble"
+    if re.search(r'\btanner\b', name_lower): return "Tanner LaForge"
     return name_str
 
 def clean_and_filter_techs(tech_str):
