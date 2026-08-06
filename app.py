@@ -34,7 +34,7 @@ def load_google_sheet(url):
         return None
 
 def process_parts_df(df, business_unit):
-    """Cleans parts inventory DataFrame from Google Sheets."""
+    """Cleans parts inventory DataFrame from Google Sheets and adjusts for returns."""
     df = df.copy()
     if 'Transferred To' not in df.columns or 'Total Value' not in df.columns:
         return pd.DataFrame()
@@ -44,7 +44,18 @@ def process_parts_df(df, business_unit):
     
     df['Total Value'] = pd.to_numeric(df['Total Value'], errors='coerce').fillna(0)
     
-    # Map Matt's TransitFleet to Matt S / Matt Schlosser
+    if 'Qty' in df.columns:
+        df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0)
+
+    # --- RETURN DEDUCTION LOGIC ---
+    # If Direction is 'Return' or 'Returned', treat as negative (returned to warehouse/inventory)
+    if 'Direction' in df.columns:
+        is_return = df['Direction'].astype(str).str.strip().str.lower().isin(['return', 'returned', 'in'])
+        df.loc[is_return, 'Total Value'] = -df.loc[is_return, 'Total Value']
+        if 'Qty' in df.columns:
+            df.loc[is_return, 'Qty'] = -df.loc[is_return, 'Qty']
+
+    # Clean up Tech names
     df['Transferred To'] = df['Transferred To'].astype(str).str.replace("Matt's TransitFleet", "Matt S")
     df['Tech'] = df['Transferred To'].apply(map_tech_name)
     df['Business Unit'] = business_unit
@@ -90,15 +101,15 @@ if sheets_dict:
 # --- TAB 1: EXECUTIVE SUMMARY TABLE ---
 with tab_exec:
     st.header("Technician Level Master Summary Table")
-    st.markdown("Consolidated view combining parts cost, job counts, invoice revenue, and timesheet hours.")
+    st.markdown("Consolidated view combining net parts cost (factoring in returns), job counts, invoice revenue, and timesheet hours.")
     
     exec_data = {}
     
-    # Parts cost per tech
+    # Net Parts cost per tech
     if not df_parts.empty:
         p_agg = df_parts.groupby('Tech')['Total Value'].sum()
         for tech, val in p_agg.items():
-            exec_data.setdefault(tech, {})['Parts Cost'] = val
+            exec_data.setdefault(tech, {})['Net Parts Cost'] = val
 
     # Jobs count per tech
     if uploaded_jobs is not None:
@@ -149,8 +160,8 @@ with tab_exec:
         master_df.rename(columns={'index': 'Technician / Team'}, inplace=True)
         
         # Format columns
-        if 'Parts Cost' in master_df.columns:
-            master_df['Parts Cost'] = master_df['Parts Cost'].map('${:,.2f}'.format)
+        if 'Net Parts Cost' in master_df.columns:
+            master_df['Net Parts Cost'] = master_df['Net Parts Cost'].map('${:,.2f}'.format)
         if 'Total Revenue' in master_df.columns:
             master_df['Total Revenue'] = master_df['Total Revenue'].map('${:,.2f}'.format)
         if 'Logged Hours' in master_df.columns:
@@ -164,24 +175,28 @@ with tab_exec:
 
 # --- TAB 2: PARTS USAGE ---
 with tab_parts:
-    st.header("Parts Usage Analysis")
+    st.header("Parts Usage Analysis (Net Usage)")
+    st.caption("Note: Items marked with Direction = 'Return' are automatically subtracted from parts costs and quantities.")
+    
     if not df_parts.empty:
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("Total Parts Value by Technician")
+            st.subheader("Net Parts Value by Technician & Business Unit")
             t_parts = df_parts.groupby(['Tech', 'Business Unit'])['Total Value'].sum().reset_index()
-            t_parts['Total Value'] = t_parts['Total Value'].map('${:,.2f}'.format)
+            t_parts.rename(columns={'Total Value': 'Net Parts Cost'}, inplace=True)
+            t_parts['Net Parts Cost'] = t_parts['Net Parts Cost'].map('${:,.2f}'.format)
             st.dataframe(t_parts, use_container_width=True, hide_index=True)
             
         with col2:
-            st.subheader("Total Parts Value by Business Unit")
+            st.subheader("Net Parts Value by Business Unit")
             bu_parts = df_parts.groupby('Business Unit')['Total Value'].agg(['count', 'sum']).reset_index()
-            bu_parts.columns = ['Business Unit', 'Total Items Used', 'Total Parts Cost']
-            bu_parts['Total Parts Cost'] = bu_parts['Total Parts Cost'].map('${:,.2f}'.format)
+            bu_parts.columns = ['Business Unit', 'Line Items', 'Net Parts Cost']
+            bu_parts['Net Parts Cost'] = bu_parts['Net Parts Cost'].map('${:,.2f}'.format)
             st.dataframe(bu_parts, use_container_width=True, hide_index=True)
 
-        st.subheader("Item-Level Usage Detail")
+        st.subheader("Item-Level Net Quantity Used")
         item_parts = df_parts.groupby(['Business Unit', 'SKU', 'Item'])['Qty'].sum().reset_index()
+        item_parts.rename(columns={'Qty': 'Net Qty Used'}, inplace=True)
         st.dataframe(item_parts, use_container_width=True, hide_index=True)
     else:
         st.info("Google Sheet parts data not loaded.")
