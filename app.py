@@ -756,8 +756,14 @@ with tab_test:
                 tech_parts_total = p_tech['Total Value'].sum()
                 mat_pct = (tech_parts_total / tech_rev * 100) if tech_rev > 0 else 0.0
 
-                # Compact single-line summary banner
-                st.caption(f"**Jobs:** {tech_jobs} | **Revenue:** ${tech_rev:,.2f} | **Parts:** ${tech_parts_total:,.2f} | **Mat %:** {mat_pct:.2f}%")
+                # Prominent 2x2 Metric Grid
+                m1, m2 = st.columns(2)
+                m1.metric("📋 Jobs Completed", f"{tech_jobs}")
+                m2.metric("💰 Attributed Revenue", f"${tech_rev:,.2f}")
+                
+                m3, m4 = st.columns(2)
+                m3.metric("⚙️ Net Parts Cost", f"${tech_parts_total:,.2f}")
+                m4.metric("📊 Material Ratio", f"{mat_pct:.2f}%")
 
                 if not p_tech.empty:
                     tech_item_summary = p_tech.groupby(['SKU', 'Item']).agg(
