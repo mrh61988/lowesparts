@@ -366,7 +366,7 @@ tab_exec, tab_parts, tab_minmax, tab_jobs, tab_inv, tab_ts, tab_test = st.tabs([
     "📋 Jobs Analysis",
     "💳 Invoices Analysis",
     "⏱️ Timesheets Analysis",
-    "🧪 Test Section: BU Efficiency"
+    "🧪 Test Section: BU & Item Efficiency"
 ])
 
 # --- TAB 1: EXECUTIVE SUMMARY TABLE ---
@@ -479,23 +479,6 @@ with tab_minmax:
                     return bu
                 
                 bu_sheet = row.get('Business Unit_sheet', 'Unknown')
-                if 'water heater' in str(bu_sheet).lower():
-                    item_name_val = row.get('Item Name', '')
-                    item_val = row.get('Item', '')
-                    desc = (str(item_name_val) + " " + str(item_val)).lower()
-                    
-                    # Precise Unit heuristic: Must match full water heater unit descriptions
-                    # and must NOT be an expansion tank or galvanized fitting
-                    is_unit = (
-                        'ao smith' in desc or 
-                        'a.o. smith' in desc or 
-                        re.search(r'\b(30|40|50|75|80)\s*gal\b', desc)
-                    ) and not ('expansion tank' in desc or 'galv' in desc)
-
-                    if is_unit:
-                        return 'Lowes - Water Heaters (Units)'
-                    else:
-                        return 'Lowes - Water Heaters (Parts)'
                 return bu_sheet
 
             merged_minmax['Business Unit'] = merged_minmax.apply(resolve_wh_bu, axis=1)
@@ -596,7 +579,7 @@ with tab_minmax:
         merged_minmax['Sort_Priority'] = merged_minmax['Action / Rec'].apply(get_sort_priority)
 
         def render_comparison_table(bu_name):
-            bu_df = merged_minmax[merged_minmax['Business Unit'] == bu_name].copy()
+            bu_df = merged_minmax[merged_minmax['Business Unit'].str.contains(bu_name, case=False, na=False)].copy()
             if not bu_df.empty:
                 # Sort by action priority first, then by target stock volume
                 bu_df.sort_values(by=['Sort_Priority', 'Target_Stock_Qty_Adj'], ascending=[True, False], inplace=True)
@@ -630,13 +613,10 @@ with tab_minmax:
                 st.info(f"No parts usage data available for {bu_name}.")
 
         st.subheader("1. Lowes - Simple Installs Min/Max Comparison")
-        render_comparison_table('Lowes - Simple Installs')
+        render_comparison_table('Simple Installs')
         
-        st.subheader("2. Lowes - Water Heaters (Parts) Min/Max Comparison")
-        render_comparison_table('Lowes - Water Heaters (Parts)')
-
-        st.subheader("3. Lowes - Water Heaters (Units) Min/Max Comparison")
-        render_comparison_table('Lowes - Water Heaters (Units)')
+        st.subheader("2. Lowes - Water Heaters Min/Max Comparison")
+        render_comparison_table('Water Heaters')
 
     else:
         st.info("Google Sheet parts data not loaded.")
@@ -733,21 +713,121 @@ with tab_ts:
     else:
         st.info("Upload 'timesheets.csv' in the sidebar.")
 
-# --- TAB 7: TEST SECTION - BU LEVEL EFFICIENCY ---
+# --- TAB 7: TEST SECTION - BU & ITEM LEVEL EFFICIENCY ---
 with tab_test:
-    st.header("🧪 Test Section: BU-Level Replenishment Efficiency & Material Ratios")
+    st.header("🧪 Test Section: Item-Level Usage, Revenue & Efficiency Analysis")
     st.markdown("""
-    This section explicitly separates **Simple Installs** and **Water Heaters** to evaluate technician replenishment 
-    intensity against expected business unit ratios. Full job and revenue credit is attributed to the first listed technician.
-    
-    *Note: In Section 2, only **Water Heater Parts** usage is counted towards Net Replenishment Cost so actual water heater unit tanks do not distort material ratios. Expected ratio range: **3.5% – 6.0%**. Mathew Hodges is based in Tucson and does not pull from the main warehouse.*
+    Test environment for evaluating item-level parts consumption linked directly to technician revenue generation, alongside business unit replenishment efficiency.
+    """)
+
+    st.markdown("---")
+    # --- TEST TABLE 1: Interactive Tech Item-Level Drilldown ---
+    st.subheader("1. Interactive Technician Item Usage & Revenue Drilldown")
+    selected_tech = st.selectbox("Select Technician to Inspect:", sorted(VALID_TECHS))
+
+    if not df_parts.empty:
+        p_tech = df_parts[df_parts['Tech'] == selected_tech]
+        tech_rev = tech_metrics[selected_tech]['Revenue']
+        tech_jobs = tech_metrics[selected_tech]['Jobs']
+        tech_parts_total = p_tech['Total Value'].sum()
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Jobs Completed", tech_jobs)
+        c2.metric("Attributed Revenue", f"${tech_rev:,.2f}")
+        c3.metric("Net Parts Cost", f"${tech_parts_total:,.2f}")
+        c4.metric("Material % of Revenue", f"{(tech_parts_total / tech_rev * 100) if tech_rev > 0 else 0:.2f}%")
+
+        if not p_tech.empty:
+            tech_item_summary = p_tech.groupby(['SKU', 'Item']).agg(
+                Qty_Used=('Qty', 'sum'),
+                Total_Cost=('Total Value', 'sum')
+            ).reset_index().sort_values(by='Total_Cost', ascending=False)
+
+            tech_item_summary['Cost % of Tech Revenue'] = (
+                (tech_item_summary['Total_Cost'] / tech_rev * 100).map('{:.2f}%'.format)
+                if tech_rev > 0 else "0.00%"
+            )
+            tech_item_summary['Total_Cost'] = tech_item_summary['Total_Cost'].map('${:,.2f}'.format)
+            tech_item_summary.rename(columns={'Qty_Used': 'Qty Used', 'Total_Cost': 'Total Cost'}, inplace=True)
+
+            st.dataframe(tech_item_summary, use_container_width=True, hide_index=True)
+        else:
+            st.info(f"No parts usage logged for {selected_tech}.")
+    else:
+        st.info("Parts usage data not loaded.")
+
+    st.markdown("---")
+    # --- TEST TABLE 2: Top Consumed Items per Technician Summary ---
+    st.subheader("2. Top 3 Consumed Items per Technician (by Value)")
+    if not df_parts.empty:
+        top_skus_list = []
+        for t in sorted(VALID_TECHS):
+            p_sub = df_parts[df_parts['Tech'] == t]
+            if not p_sub.empty:
+                top_items = (
+                    p_sub.groupby('Item')['Total Value']
+                    .sum()
+                    .reset_index()
+                    .sort_values(by='Total Value', ascending=False)
+                    .head(3)
+                )
+                top_str = ", ".join([f"{r['Item']} (${r['Total Value']:,.2f})" for _, r in top_items.iterrows()])
+            else:
+                top_str = "None"
+
+            t_rev = tech_metrics[t]['Revenue']
+            t_cost = tech_metrics[t]['PartsCost']
+            t_jobs = tech_metrics[t]['Jobs']
+
+            top_skus_list.append({
+                "Technician": t,
+                "Jobs Completed": t_jobs,
+                "Attributed Revenue": t_rev,
+                "Total Parts Cost": t_cost,
+                "Material % of Rev": (t_cost / t_rev * 100) if t_rev > 0 else 0.0,
+                "Top 3 Consumed Items": top_str
+            })
+
+        df_top_summary = pd.DataFrame(top_skus_list)
+        df_top_summary["Attributed Revenue"] = df_top_summary["Attributed Revenue"].map('${:,.2f}'.format)
+        df_top_summary["Total Parts Cost"] = df_top_summary["Total Parts Cost"].map('${:,.2f}'.format)
+        df_top_summary["Material % of Rev"] = df_top_summary["Material % of Rev"].map('{:.2f}%'.format)
+
+        st.dataframe(df_top_summary, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    # --- TEST TABLE 3: SKU Benchmarking Across Technicians ---
+    st.subheader("3. SKU Usage Benchmarking Matrix Across Technicians")
+    if not df_parts.empty:
+        sku_pivot = pd.pivot_table(
+            df_parts,
+            index=['SKU', 'Item'],
+            columns='Tech',
+            values='Qty',
+            aggfunc='sum',
+            fill_value=0
+        ).reset_index()
+
+        cost_map = df_parts.groupby('SKU')['Total Value'].sum().to_dict()
+        sku_pivot['Total Units Used'] = sku_pivot.iloc[:, 2:].sum(axis=1)
+        sku_pivot['Total Value ($)'] = sku_pivot['SKU'].map(cost_map).fillna(0)
+        sku_pivot.sort_values(by='Total Value ($)', ascending=False, inplace=True)
+        sku_pivot['Total Value ($)'] = sku_pivot['Total Value ($)'].map('${:,.2f}'.format)
+
+        st.dataframe(sku_pivot, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    # --- TEST TABLE 4: BU Level Replenishment Efficiency & Material Ratios ---
+    st.subheader("4. BU-Level Replenishment Efficiency & Material Ratios")
+    st.markdown("""
+    Evaluates technician replenishment intensity against expected business unit material ratios.
+    *Note: In Section B, only **Water Heater Parts** usage is counted towards Net Replenishment Cost so actual water heater unit tanks do not distort material ratios. Expected ratio range: **3.5% – 6.0%**. Mathew Hodges is based in Tucson and does not pull from the main warehouse.*
     """)
 
     def get_bu_efficiency_table(bu_name, min_material_ratio_threshold, max_material_ratio_threshold):
         bu_rows = []
         for t in sorted(VALID_TECHS):
             if not df_parts.empty:
-                # Filter specifically for Parts (excluding actual Water Heater Units from replenishment cost)
                 if 'water heater' in bu_name.lower():
                     p_sub = df_parts[
                         (df_parts['Tech'] == t) & 
@@ -808,14 +888,14 @@ with tab_test:
             df_res["Material % of Revenue"] = df_res["Material % of Revenue"].map('{:.2f}%'.format)
         return df_res
 
-    st.subheader("1. Lowes - Simple Installs (Expected Material Ratio: 1.0% – 3.5%)")
+    st.markdown("##### A. Lowes - Simple Installs (Expected Material Ratio: 1.0% – 3.5%)")
     simple_eff_df = get_bu_efficiency_table('Lowes - Simple Installs', min_material_ratio_threshold=1.0, max_material_ratio_threshold=3.5)
     if not simple_eff_df.empty:
         st.dataframe(simple_eff_df, use_container_width=True, hide_index=True)
     else:
         st.info("No data available for Simple Installs.")
 
-    st.subheader("2. Lowes - Water Heaters (Expected Material Ratio: 3.5% – 6.0%)")
+    st.markdown("##### B. Lowes - Water Heaters (Expected Material Ratio: 3.5% – 6.0%)")
     wh_eff_df = get_bu_efficiency_table('Lowes - Water Heaters', min_material_ratio_threshold=3.5, max_material_ratio_threshold=6.0)
     if not wh_eff_df.empty:
         st.dataframe(wh_eff_df, use_container_width=True, hide_index=True)
