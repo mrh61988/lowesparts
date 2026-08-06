@@ -179,6 +179,53 @@ def read_uploaded_csv(file_obj):
         file_obj.seek(0)
         return pd.read_csv(file_obj, header=0)
 
+def detect_dataset_date_range(ts_df, inv_filtered, df_parts):
+    """Automatically detects overall date range across timesheets, invoices, and parts transfers."""
+    all_dates = []
+
+    # 1. Check Timesheet Clock In Dates
+    if ts_df is not None and not ts_df.empty and 'In' in ts_df.columns:
+        valid_ts_dates = ts_df['In'].dropna()
+        if not valid_ts_dates.empty:
+            all_dates.extend(valid_ts_dates.tolist())
+
+    # 2. Check Invoice Dates
+    if inv_filtered is not None and not inv_filtered.empty:
+        for col in inv_filtered.columns:
+            if 'date' in str(col).lower():
+                parsed = pd.to_datetime(inv_filtered[col], errors='coerce').dropna()
+                if not parsed.empty:
+                    all_dates.extend(parsed.tolist())
+                    break
+
+    # 3. Check Parts Transfer Dates
+    if df_parts is not None and not df_parts.empty:
+        for col in df_parts.columns:
+            if 'date' in str(col).lower():
+                parsed = pd.to_datetime(df_parts[col], errors='coerce').dropna()
+                if not parsed.empty:
+                    all_dates.extend(parsed.tolist())
+                    break
+
+    if all_dates:
+        min_d = min(all_dates)
+        max_d = max(all_dates)
+        days = (max_d - min_d).days + 1
+        days = max(1, days)
+        weeks = days / 7.0
+
+        if days <= 10:
+            label = f"{days}-Day Period ({min_d.strftime('%b %d')}–{max_d.strftime('%b %d')})"
+        elif days <= 18:
+            label = f"2-Week Period ({min_d.strftime('%b %d')}–{max_d.strftime('%b %d')})"
+        else:
+            label = f"Period ({min_d.strftime('%b %d')}–{max_d.strftime('%b %d')})"
+
+        return days, weeks, label, min_d, max_d
+
+    # Default baseline if no date fields exist or data files aren't uploaded yet
+    return 31, 31.0 / 7.0, "Monthly (Default)", None, None
+
 # --- SIDEBAR FILTERS & DATA SOURCES ---
 st.sidebar.header("📁 Data Sources")
 
@@ -193,13 +240,6 @@ uploaded_timesheets = st.sidebar.file_uploader("Upload 'timesheets.csv'", type=[
 
 TARGET_BUS = ['Lowes - Simple Installs', 'Lowes - Water Heaters']
 
-# Display active tech roster in sidebar without showing pay rates
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 👷 Tech Roster")
-for t, p in PAY_STRUCTURE.items():
-    loc_tag = "🌵 Tucson" if p["location"] == "Tucson" else "📍 Phoenix"
-    st.sidebar.markdown(f"**{t}** ({loc_tag})")
-
 # --- PRE-PROCESS ALL DATA ONCE ---
 # 1. Parts Data from Google Sheets
 sheets_dict = fetch_live_google_sheet(sheet_url)
@@ -208,10 +248,8 @@ df_current_minmax = pd.DataFrame()
 
 if sheets_dict:
     sheet_names = list(sheets_dict.keys())
-    
     simple_sheet, wh_parts_sheet, wh_units_sheet, minmax_sheet = None, None, None, None
     
-    # Identify sheets safely
     for s in sheet_names:
         sl = s.lower()
         if 'min' in sl and 'max' in sl:
@@ -223,7 +261,6 @@ if sheets_dict:
         elif 'water heater' in sl and 'part' in sl:
             wh_parts_sheet = s
             
-    # Fallbacks
     if not simple_sheet and len(sheet_names) > 0: simple_sheet = sheet_names[0]
     if not wh_parts_sheet and len(sheet_names) > 1: wh_parts_sheet = sheet_names[1]
     if not wh_units_sheet and len(sheet_names) > 2: wh_units_sheet = sheet_names[2]
@@ -238,14 +275,10 @@ if sheets_dict:
     
     df_parts = pd.concat([df_simple_p, df_wh_p, df_wh_u], ignore_index=True)
     
-    # Process Min/Max sheet
     if minmax_sheet and minmax_sheet in sheets_dict:
         raw_minmax = sheets_dict[minmax_sheet].copy()
-        
-        # Flatten all columns first to avoid weird hidden newlines
         raw_minmax.columns = raw_minmax.columns.astype(str).str.replace('\n', ' ').str.strip()
         
-        # Fuzzy column locator
         c_sku = find_col(raw_minmax, [['sku'], ['item #'], ['part']])
         c_minmax = find_col(raw_minmax, [['warehouse', 'min'], ['min', 'max'], ['min/max']])
         c_qty = find_col(raw_minmax, [['qty'], ['quantity'], ['on hand'], ['stock']])
@@ -254,7 +287,6 @@ if sheets_dict:
 
         if c_sku:
             raw_minmax['SKU_clean'] = raw_minmax[c_sku].apply(clean_sku)
-            
             if c_minmax:
                 parsed_mins_maxs = raw_minmax[c_minmax].apply(parse_min_max).tolist()
                 raw_minmax[['Current Min', 'Current Max']] = parsed_mins_maxs
@@ -262,16 +294,8 @@ if sheets_dict:
                 raw_minmax['Current Min'] = 0
                 raw_minmax['Current Max'] = 0
                 
-            if c_qty:
-                raw_minmax['Current On Hand'] = pd.to_numeric(raw_minmax[c_qty], errors='coerce').fillna(0).astype(int)
-            else:
-                raw_minmax['Current On Hand'] = 0
-                
-            if c_dept:
-                raw_minmax['Business Unit_sheet'] = raw_minmax[c_dept].apply(map_dept_to_bu)
-            else:
-                raw_minmax['Business Unit_sheet'] = 'Unknown'
-                
+            raw_minmax['Current On Hand'] = pd.to_numeric(raw_minmax[c_qty], errors='coerce').fillna(0).astype(int) if c_qty else 0
+            raw_minmax['Business Unit_sheet'] = raw_minmax[c_dept].apply(map_dept_to_bu) if c_dept else 'Unknown'
             raw_minmax['Item Name'] = raw_minmax[c_item] if c_item else ''
             
             df_current_minmax = raw_minmax[['SKU_clean', 'Item Name', 'Business Unit_sheet', 'Current On Hand', 'Current Min', 'Current Max']].copy()
@@ -285,7 +309,7 @@ if raw_jobs_df is not None and 'Business Unit' in raw_jobs_df.columns:
     jobs_filtered = jobs_filtered[jobs_filtered['Tech Clean'].notna()].copy()
     jobs_filtered['Invoice Amount'] = pd.to_numeric(jobs_filtered['Total Invoice Amount'], errors='coerce').fillna(0)
 
-# 3. Invoices Data (Excludes Draft & Void; attributing full credit to first listed tech)
+# 3. Invoices Data
 raw_inv_df = read_uploaded_csv(uploaded_invoices)
 inv_filtered = pd.DataFrame()
 if raw_inv_df is not None:
@@ -300,7 +324,7 @@ if raw_inv_df is not None:
         inv_filtered['Invoice Total'] = pd.to_numeric(inv_filtered['Invoice Total'], errors='coerce').fillna(0)
         inv_filtered['Business Unit Clean'] = inv_filtered[bu_col]
 
-# 4. Timesheets Data with Weekly Overtime Logic
+# 4. Timesheets Data
 ts_df = read_uploaded_csv(uploaded_timesheets)
 if ts_df is not None and 'Clock In Date/Time' in ts_df.columns:
     ts_df['Tech Clean'] = ts_df['User'].apply(get_first_valid_tech)
@@ -309,6 +333,27 @@ if ts_df is not None and 'Clock In Date/Time' in ts_df.columns:
     ts_df['Out'] = pd.to_datetime(ts_df['Clock Out Date/Time'], errors='coerce')
     ts_df['Hours'] = (ts_df['Out'] - ts_df['In']).dt.total_seconds() / 3600.0
     ts_df['Week'] = ts_df['In'].dt.to_period('W-SUN')
+
+# --- AUTOMATIC DATE RANGE DETECTION ---
+total_days, total_weeks, period_label, min_date, max_date = detect_dataset_date_range(ts_df, inv_filtered, df_parts)
+
+# Sidebar Feedback Banner
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📅 Auto-Detected Timeframe")
+if min_date and max_date:
+    st.sidebar.success(
+        f"**Range:** {min_date.strftime('%b %d, %Y')} – {max_date.strftime('%b %d, %Y')}\n\n"
+        f"**Duration:** {total_days} Days ({total_weeks:.2f} Weeks)"
+    )
+else:
+    st.sidebar.info("Using default monthly baseline until data files with dates are uploaded.")
+
+# Display active tech roster in sidebar
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 👷 Tech Roster")
+for t, p in PAY_STRUCTURE.items():
+    loc_tag = "🌵 Tucson" if p["location"] == "Tucson" else "📍 Phoenix"
+    st.sidebar.markdown(f"**{t}** ({loc_tag})")
 
 # --- CALCULATE METRICS, REVENUE, HOURS & OVERTIME PER INDIVIDUAL TECH ---
 tech_metrics = {
@@ -342,7 +387,6 @@ if not jobs_filtered.empty:
 
 if ts_df is not None and not ts_df.empty:
     weekly_hrs = ts_df.groupby(['Tech Clean', 'Week'])['Hours'].sum().reset_index()
-    
     for t in VALID_TECHS:
         t_weeks = weekly_hrs[weekly_hrs['Tech Clean'] == t]
         tot_hrs = 0.0
@@ -380,14 +424,14 @@ with tab_exec:
         p_info = PAY_STRUCTURE[t]
         p_type = p_info["type"]
         
-        # Calculate Pay with Weekly Overtime
+        # Calculate Pay with Dynamic Timeframe Scaling for Salaries
         if p_type == "Hourly":
             rate = p_info["rate"]
             pay = (m["RegHours"] * rate) + (m["OTHours"] * rate * 1.5)
         elif p_type == "Commission":
             pay = m["Revenue"] * p_info["rate"]
         elif p_type == "Salary":
-            pay = p_info["annual"] / 12.0
+            pay = p_info["annual"] * (total_days / 365.0)  # Dynamically scales to upload timeframe
             
         exec_rows.append({
             "Technician": t,
@@ -397,7 +441,7 @@ with tab_exec:
             "Total Hours": m["Hours"],
             "Net Parts Cost": m["PartsCost"],
             "Attributed Revenue": m["Revenue"],
-            "Gross Pay (July 2026)": pay
+            f"Gross Pay ({period_label})": pay
         })
 
     master_df = pd.DataFrame(exec_rows)
@@ -407,7 +451,7 @@ with tab_exec:
     display_master["Total Hours"] = display_master["Total Hours"].map('{:,.2f} hrs'.format)
     display_master["Net Parts Cost"] = display_master["Net Parts Cost"].map('${:,.2f}'.format)
     display_master["Attributed Revenue"] = display_master["Attributed Revenue"].map('${:,.2f}'.format)
-    display_master["Gross Pay (July 2026)"] = display_master["Gross Pay (July 2026)"].map('${:,.2f}'.format)
+    display_master[f"Gross Pay ({period_label})"] = display_master[f"Gross Pay ({period_label})"].map('${:,.2f}'.format)
 
     st.dataframe(display_master, use_container_width=True, hide_index=True)
 
@@ -442,16 +486,14 @@ with tab_parts:
 # --- TAB 3: WAREHOUSE MIN/MAX COMPARISON ---
 with tab_minmax:
     st.header("📦 Warehouse Min/Max Analysis & Comparison")
-    st.markdown("""
-    Comparison of **Current Warehouse Min/Max settings** against **Suggested 1.5-Week Inventory Targets** calculated from historical demand (July 2026 / 4.43 weeks).
+    st.markdown(f"""
+    Comparison of **Current Warehouse Min/Max settings** against **Suggested 1.5-Week Inventory Targets** calculated from auto-detected historical demand (**{period_label}** / **{total_weeks:.2f} weeks**).
     
     *Only triggers an action if the suggested Min or Max deviates by **20% or more** from the current setting in Google Sheets. Organized with the highest priority items at the top.*
     """)
     
     if not df_parts.empty:
-        total_weeks = 31.0 / 7.0
-        
-        # Calculate item-level demand from df_parts
+        # Calculate item-level demand based on dynamic total_weeks
         item_usage = df_parts.groupby(['Business Unit', 'SKU', 'Item']).agg(
             Total_Net_Qty=('Qty', 'sum'),
             Total_Net_Cost=('Total Value', 'sum')
@@ -463,7 +505,6 @@ with tab_minmax:
         item_usage['Target_Stock_Qty'] = np.ceil(item_usage['Weekly_Avg_Qty'] * 1.5).astype(int)
         item_usage['Max_Stock_Qty'] = np.maximum(np.ceil(item_usage['Weekly_Avg_Qty'] * 2.0), item_usage['Min_Stock_Qty'] + 1).astype(int)
         
-        # Perform outer merge exclusively on SKU_clean
         if not df_current_minmax.empty:
             merged_minmax = pd.merge(
                 item_usage[['SKU_clean', 'Business Unit', 'Item', 'Total_Net_Qty', 'Weekly_Avg_Qty', 'Min_Stock_Qty', 'Target_Stock_Qty', 'Max_Stock_Qty']],
@@ -472,34 +513,26 @@ with tab_minmax:
                 how='outer'
             )
             
-            # Safe Business Unit Resolver handling missing keys cleanly
             def resolve_wh_bu(row):
                 bu = row.get('Business Unit')
                 if pd.notna(bu) and str(bu).strip() != '' and bu != 'Unknown':
                     return bu
-                
-                bu_sheet = row.get('Business Unit_sheet', 'Unknown')
-                return bu_sheet
+                return row.get('Business Unit_sheet', 'Unknown')
 
             merged_minmax['Business Unit'] = merged_minmax.apply(resolve_wh_bu, axis=1)
             
-            # Fill Descriptions safely
             item_name_col = merged_minmax['Item Name'] if 'Item Name' in merged_minmax.columns else pd.Series(index=merged_minmax.index)
             item_col = merged_minmax['Item'] if 'Item' in merged_minmax.columns else pd.Series(index=merged_minmax.index)
             
             merged_minmax['Item Description'] = item_name_col.fillna(item_col).fillna('')
-            
             merged_minmax['Total_Net_Qty'] = merged_minmax['Total_Net_Qty'].fillna(0).astype(int)
             merged_minmax['Weekly_Avg_Qty'] = merged_minmax['Weekly_Avg_Qty'].fillna(0.0)
-            
             merged_minmax['Current On Hand'] = merged_minmax['Current On Hand'].fillna(0).astype(int)
             merged_minmax['Current Min'] = merged_minmax['Current Min'].fillna(0).astype(int)
             merged_minmax['Current Max'] = merged_minmax['Current Max'].fillna(0).astype(int)
-            
             merged_minmax['Min_Stock_Qty'] = merged_minmax['Min_Stock_Qty'].fillna(0).astype(int)
             merged_minmax['Target_Stock_Qty'] = merged_minmax['Target_Stock_Qty'].fillna(0).astype(int)
             merged_minmax['Max_Stock_Qty'] = merged_minmax['Max_Stock_Qty'].fillna(0).astype(int)
-            
             merged_minmax['SKU'] = merged_minmax['SKU_clean']
             
         else:
@@ -509,31 +542,26 @@ with tab_minmax:
             merged_minmax['Current Min'] = 0
             merged_minmax['Current Max'] = 0
 
-        # Recommendation Logic with Zero-Demand protection & 20% threshold buffer
         def resolve_minmax_and_rec(row):
             c_min, c_max = int(row['Current Min']), int(row['Current Max'])
             s_min, s_max = int(row['Min_Stock_Qty']), int(row['Max_Stock_Qty'])
             target_qty = int(row['Target_Stock_Qty'])
             j_net = int(row['Total_Net_Qty'])
             
-            # Case 1: Unconfigured SKU in Google Sheet (Min=0, Max=0)
             if c_min == 0 and c_max == 0:
                 if j_net == 0:
                     return 0, 0, 0, "⚪ Inactive / No Stock"
                 return s_min, s_max, target_qty, "⚠️ Set Min/Max"
                 
-            # Case 2: Configured SKU in Google Sheet, but 0 Usage in analyzed period (July)
             if j_net == 0:
                 s_min_adj = c_min
                 s_max_adj = c_max
                 target_adj = int(np.ceil(c_min * 1.5)) if c_min > 0 else c_max
                 return s_min_adj, s_max_adj, target_adj, "⚪ Zero Demand in Period"
                 
-            # Case 3: Configured SKU with Active Usage in July
             d_min = s_min - c_min
             d_max = s_max - c_max
             
-            # 20% deviation threshold
             min_flag = abs(d_min) >= (0.20 * c_min) if c_min > 0 else (s_min > 0)
             max_flag = abs(d_max) >= (0.20 * c_max) if c_max > 0 else (s_max > 0)
             
@@ -564,11 +592,9 @@ with tab_minmax:
         merged_minmax['Target_Stock_Qty_Adj'] = [r[2] for r in res]
         merged_minmax['Action / Rec'] = [r[3] for r in res]
 
-        # Compact Min & Max Comparison formatting
         merged_minmax['Min (Curr ➔ Sug)'] = merged_minmax['Current Min'].astype(str) + " ➔ " + merged_minmax['Min_Stock_Qty_Adj'].astype(str)
         merged_minmax['Max (Curr ➔ Sug)'] = merged_minmax['Current Max'].astype(str) + " ➔ " + merged_minmax['Max_Stock_Qty_Adj'].astype(str)
 
-        # Priority Sorter for the dataframe
         def get_sort_priority(action_str):
             if "⚠️" in action_str: return 1
             if "⬆️" in action_str or "⬇️" in action_str or "🔄" in action_str: return 2
@@ -581,12 +607,11 @@ with tab_minmax:
         def render_comparison_table(bu_name):
             bu_df = merged_minmax[merged_minmax['Business Unit'].str.contains(bu_name, case=False, na=False)].copy()
             if not bu_df.empty:
-                # Sort by action priority first, then by target stock volume
                 bu_df.sort_values(by=['Sort_Priority', 'Target_Stock_Qty_Adj'], ascending=[True, False], inplace=True)
                 
                 bu_df.rename(columns={
                     'SKU': 'SKU',
-                    'Total_Net_Qty': 'July Net',
+                    'Total_Net_Qty': f'Net ({period_label})',
                     'Weekly_Avg_Qty': 'Wk Avg',
                     'Current On Hand': 'On Hand',
                     'Target_Stock_Qty_Adj': 'Target (1.5 Wk)'
@@ -595,7 +620,7 @@ with tab_minmax:
                 bu_df['Wk Avg'] = bu_df['Wk Avg'].map('{:.2f}'.format)
                 
                 show_cols = [
-                    'SKU', 'Item Description', 'July Net', 'Wk Avg', 
+                    'SKU', 'Item Description', f'Net ({period_label})', 'Wk Avg', 
                     'On Hand', 'Min (Curr ➔ Sug)', 'Max (Curr ➔ Sug)', 'Target (1.5 Wk)', 
                     'Action / Rec'
                 ]
