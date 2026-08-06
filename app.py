@@ -694,16 +694,6 @@ with tab_minmax:
 with tab_jobs:
     st.header("Jobs Analysis")
     if not jobs_filtered.empty:
-        st.subheader("Job Summary by Tech, Business Unit & Job Title")
-        j_summary = jobs_filtered.groupby(['Tech Clean', 'Business Unit', 'Title']).agg(
-            Job_Count=('#ID', 'count'),
-            Total_Invoice_Amount=('Invoice Amount', 'sum')
-        ).reset_index()
-        j_summary.rename(columns={'Tech Clean': 'Technician', 'Title': 'Job Title'}, inplace=True)
-        j_summary['Total_Invoice_Amount'] = j_summary['Total_Invoice_Amount'].map('${:,.2f}'.format)
-        
-        st.dataframe(j_summary.sort_values(by=['Technician', 'Business Unit']), use_container_width=True, hide_index=True)
-
         # --- PARSE JOBS FOR REVENUE & FIXTURE BREAKDOWNS ---
         summary_col = None
         for col in jobs_filtered.columns:
@@ -720,7 +710,8 @@ with tab_jobs:
             
             parsed_counts, item_type_label = parse_job_fixtures(title_val, summary_val)
             
-            clean_title = re.sub(r':\s*lowes.*', '', str(title_val), flags=re.IGNORECASE).strip()
+            # Standardized title with Title Casing to group 'Sink' and 'sink' together
+            clean_title = re.sub(r':\s*lowes.*', '', str(title_val), flags=re.IGNORECASE).strip().title()
 
             row_dict = {
                 'Technician': row['Tech Clean'],
@@ -736,8 +727,19 @@ with tab_jobs:
 
         df_jobs_parsed = pd.DataFrame(jobs_breakdown_rows)
 
+        st.subheader("Job Summary by Tech, Business Unit & Job Title")
+        j_summary = df_jobs_parsed.groupby(['Technician', 'Department', 'Job Type']).agg(
+            Job_Count=('Job Type', 'count'),
+            Total_Invoice_Amount=('Invoice Total', 'sum')
+        ).reset_index().sort_values(by=['Technician', 'Department', 'Job_Count'], ascending=[True, True, False])
+        
+        j_summary.rename(columns={'Department': 'Business Unit', 'Job Type': 'Job Title'}, inplace=True)
+        j_summary['Total_Invoice_Amount'] = j_summary['Total_Invoice_Amount'].map('${:,.2f}'.format)
+        
+        st.dataframe(j_summary, use_container_width=True, hide_index=True)
+
         st.markdown("---")
-        # --- NEW SECTION 1: Total Department Revenue per Job Type & Item Type ---
+        # --- SECTION 1: Total Department Revenue per Job Type & Item Type ---
         st.subheader("🏢 Total Department Revenue by Job Type & Item Type")
         dept_rev_summary = df_jobs_parsed.groupby(['Department', 'Job Type', 'Item / Fixture Type']).agg(
             Job_Count=('Job Type', 'count'),
@@ -763,7 +765,7 @@ with tab_jobs:
         )
 
         st.markdown("---")
-        # --- NEW SECTION 2: Per Tech Revenue per Job Type & Item Type ---
+        # --- SECTION 2: Per Tech Revenue per Job Type & Item Type ---
         st.subheader("👷 Technician Revenue Breakdown by Job Type & Item Type")
         
         selected_tech_jobs = st.selectbox("Filter by Technician (Optional):", ["All Technicians"] + sorted(VALID_TECHS))
@@ -797,7 +799,7 @@ with tab_jobs:
         )
 
         st.markdown("---")
-        # --- EXISTING FIXTURE QUANTITY BREAKDOWNS ---
+        # --- FIXTURE QUANTITY BREAKDOWNS ---
         st.subheader("Item & Fixture Quantities Breakdown by Job Title")
         st.caption("Parses fixture counts from Job Titles & Subtitles (e.g. '1/1' with Faucet & Toilet = 1 Faucet, 1 Toilet).")
 
