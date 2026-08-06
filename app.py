@@ -807,13 +807,34 @@ with tab_test:
     st.markdown("---")
     # --- TEST TABLE 2: Top Consumed Items per Technician Summary (Excludes AO Smith Water Heaters) ---
     st.subheader("2. Top 3 Consumed Items per Technician (by Value, Excl. AO Smith)")
+    
+    bu_filter_sec2 = st.selectbox(
+        "Filter Category / Business Unit:",
+        ["All (Simple Installs & WH Parts)", "Simple Installs", "Water Heater Parts"],
+        key="bu_filter_sec2"
+    )
+
     if not df_parts.empty:
         is_ao_smith = df_parts['Item'].astype(str).str.lower().str.contains(r'a\.?o\.?\s*smith', regex=True, na=False)
         df_parts_clean = df_parts[~is_ao_smith]
 
         top_skus_list = []
         for t in sorted(VALID_TECHS):
-            p_sub = df_parts_clean[df_parts_clean['Tech'] == t]
+            if bu_filter_sec2 == "Simple Installs":
+                p_sub = df_parts_clean[(df_parts_clean['Tech'] == t) & (df_parts_clean['Business Unit'].str.contains('Simple Installs', case=False, na=False))]
+                t_rev = inv_filtered[(inv_filtered['Tech Clean'] == t) & (inv_filtered['Business Unit Clean'].str.contains('Simple Installs', case=False, na=False))]['Invoice Total'].sum() if not inv_filtered.empty else 0.0
+                t_jobs = len(jobs_filtered[(jobs_filtered['Tech Clean'] == t) & (jobs_filtered['Business Unit'].str.contains('Simple Installs', case=False, na=False))]) if not jobs_filtered.empty else 0
+
+            elif bu_filter_sec2 == "Water Heater Parts":
+                p_sub = df_parts_clean[(df_parts_clean['Tech'] == t) & (df_parts_clean['Business Unit'].str.contains('Water Heater', case=False, na=False)) & (~df_parts_clean['Business Unit'].str.contains('Units', case=False, na=False))]
+                t_rev = inv_filtered[(inv_filtered['Tech Clean'] == t) & (inv_filtered['Business Unit Clean'].str.contains('Water Heater', case=False, na=False))]['Invoice Total'].sum() if not inv_filtered.empty else 0.0
+                t_jobs = len(jobs_filtered[(jobs_filtered['Tech Clean'] == t) & (jobs_filtered['Business Unit'].str.contains('Water Heater', case=False, na=False))]) if not jobs_filtered.empty else 0
+
+            else: # All (Simple Installs & WH Parts)
+                p_sub = df_parts_clean[(df_parts_clean['Tech'] == t) & (~df_parts_clean['Business Unit'].str.contains('Units', case=False, na=False))]
+                t_rev = tech_metrics[t]['Revenue']
+                t_jobs = tech_metrics[t]['Jobs']
+
             if not p_sub.empty:
                 top_items = (
                     p_sub.groupby('Item')['Total Value']
@@ -826,9 +847,7 @@ with tab_test:
             else:
                 top_str = "None"
 
-            t_rev = tech_metrics[t]['Revenue']
             t_cost = p_sub['Total Value'].sum()
-            t_jobs = tech_metrics[t]['Jobs']
 
             top_skus_list.append({
                 "Technician": t,
