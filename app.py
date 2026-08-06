@@ -8,13 +8,13 @@ st.markdown("Detailed tabular analysis across Parts Usage, Jobs, Invoices, Times
 
 # --- VALID TECHNICIANS LIST & PAY STRUCTURE ---
 PAY_STRUCTURE = {
-    "Nate Smith": {"type": "Hourly", "rate": 22.50, "details": "$22.50/hr", "location": "Phoenix"},
-    "Bill Black": {"type": "Hourly", "rate": 25.00, "details": "$25.00/hr", "location": "Phoenix"},
+    "Nate Smith": {"type": "Hourly", "rate": 22.50, "details": "$22.50/hr (1.5x OT > 40 hrs/wk)", "location": "Phoenix"},
+    "Bill Black": {"type": "Hourly", "rate": 25.00, "details": "$25.00/hr (1.5x OT > 40 hrs/wk)", "location": "Phoenix"},
     "Sean Marble": {"type": "Salary", "annual": 70000.0, "details": "$70,000/yr ($5,833.33/mo)", "location": "Phoenix"},
-    "Tanner LaForge": {"type": "Hourly", "rate": 25.00, "details": "$25.00/hr", "location": "Phoenix"},
+    "Tanner LaForge": {"type": "Hourly", "rate": 25.00, "details": "$25.00/hr (1.5x OT > 40 hrs/wk)", "location": "Phoenix"},
     "Erik Tange": {"type": "Commission", "rate": 0.34, "details": "34% of Invoice Revenue", "location": "Phoenix"},
     "Bryan Pickett": {"type": "Commission", "rate": 0.34, "details": "34% of Invoice Revenue", "location": "Phoenix"},
-    "Matt Schlosser": {"type": "Hourly", "rate": 25.00, "details": "$25.00/hr", "location": "Phoenix"},
+    "Matt Schlosser": {"type": "Hourly", "rate": 25.00, "details": "$25.00/hr (1.5x OT > 40 hrs/wk)", "location": "Phoenix"},
     "Mathew Hodges": {"type": "Salary", "annual": 65000.0, "details": "$65,000/yr ($5,416.67/mo)", "location": "Tucson"}
 }
 
@@ -169,7 +169,7 @@ if raw_inv_df is not None:
         inv_filtered['Invoice Total'] = pd.to_numeric(inv_filtered['Invoice Total'], errors='coerce').fillna(0)
         inv_filtered['Business Unit Clean'] = inv_filtered[bu_col]
 
-# 4. Timesheets Data
+# 4. Timesheets Data with Weekly Overtime Logic
 ts_df = read_uploaded_csv(uploaded_timesheets)
 if ts_df is not None and 'Clock In Date/Time' in ts_df.columns:
     ts_df['Tech Clean'] = ts_df['User'].apply(clean_and_filter_techs)
@@ -177,9 +177,19 @@ if ts_df is not None and 'Clock In Date/Time' in ts_df.columns:
     ts_df['In'] = pd.to_datetime(ts_df['Clock In Date/Time'], errors='coerce')
     ts_df['Out'] = pd.to_datetime(ts_df['Clock Out Date/Time'], errors='coerce')
     ts_df['Hours'] = (ts_df['Out'] - ts_df['In']).dt.total_seconds() / 3600.0
+    ts_df['Week'] = ts_df['In'].dt.to_period('W-SUN')
 
-# --- CALCULATE ATTRIBUTED REVENUE & HOURS PER INDIVIDUAL TECH ---
-tech_metrics = {t: {"Revenue": 0.0, "Hours": 0.0, "Jobs": 0, "PartsCost": 0.0} for t in VALID_TECHS}
+# --- CALCULATE METRICS, REVENUE, HOURS & OVERTIME PER INDIVIDUAL TECH ---
+tech_metrics = {
+    t: {
+        "Revenue": 0.0, 
+        "Hours": 0.0, 
+        "RegHours": 0.0, 
+        "OTHours": 0.0, 
+        "Jobs": 0, 
+        "PartsCost": 0.0
+    } for t in VALID_TECHS
+}
 
 if not df_parts.empty:
     for _, row in df_parts.iterrows():
@@ -207,14 +217,23 @@ if not jobs_filtered.empty:
                 tech_metrics[t]["Jobs"] += 1
 
 if ts_df is not None and not ts_df.empty:
-    for _, row in ts_df.iterrows():
-        t_clean = row['Tech Clean']
-        if pd.isna(t_clean): continue
-        t_list = [x.strip() for x in t_clean.split(',')]
-        split_hrs = row['Hours'] / len(t_list)
-        for t in t_list:
-            if t in tech_metrics:
-                tech_metrics[t]["Hours"] += split_hrs
+    # Group by Tech and Week to calculate Weekly Overtime (>40 hrs/wk)
+    weekly_hrs = ts_df.groupby(['Tech Clean', 'Week'])['Hours'].sum().reset_index()
+    
+    for t in VALID_TECHS:
+        t_weeks = weekly_hrs[weekly_hrs['Tech Clean'] == t]
+        tot_hrs = 0.0
+        tot_reg = 0.0
+        tot_ot = 0.0
+        for _, w_row in t_weeks.iterrows():
+            w_hrs = w_row['Hours']
+            tot_hrs += w_hrs
+            tot_reg += min(40.0, w_hrs)
+            tot_ot += max(0.0, w_hrs - 40.0)
+            
+        tech_metrics[t]["Hours"] = tot_hrs
+        tech_metrics[t]["RegHours"] = tot_reg
+        tech_metrics[t]["OTHours"] = tot_ot
 
 # --- TABS ---
 tab_exec, tab_pay, tab_parts, tab_jobs, tab_inv, tab_ts, tab_test = st.tabs([
@@ -230,7 +249,7 @@ tab_exec, tab_pay, tab_parts, tab_jobs, tab_inv, tab_ts, tab_test = st.tabs([
 # --- TAB 1: EXECUTIVE SUMMARY TABLE ---
 with tab_exec:
     st.header("Technician Level Master Summary Table")
-    st.markdown("Consolidated view for active technicians combining net parts cost, job counts, invoice revenue, timesheet hours, and calculated pay.")
+    st.markdown("Consolidated view for active technicians combining net parts cost, job counts, invoice revenue, regular/overtime hours, and calculated pay.")
     
     exec_rows = []
     for t in sorted(VALID_TECHS):
@@ -238,9 +257,10 @@ with tab_exec:
         p_info = PAY_STRUCTURE[t]
         p_type = p_info["type"]
         
-        # Calculate Pay
+        # Calculate Pay with Weekly Overtime
         if p_type == "Hourly":
-            pay = m["Hours"] * p_info["rate"]
+            rate = p_info["rate"]
+            pay = (m["RegHours"] * rate) + (m["OTHours"] * rate * 1.5)
         elif p_type == "Commission":
             pay = m["Revenue"] * p_info["rate"]
         elif p_type == "Salary":
@@ -251,7 +271,9 @@ with tab_exec:
             "Location": p_info["location"],
             "Pay Model": p_info["details"],
             "Jobs Completed": m["Jobs"],
-            "Logged Hours": m["Hours"],
+            "Reg Hours": m["RegHours"],
+            "OT Hours": m["OTHours"],
+            "Total Hours": m["Hours"],
             "Net Parts Cost": m["PartsCost"],
             "Attributed Revenue": m["Revenue"],
             "Gross Pay (July 2026)": pay
@@ -259,7 +281,9 @@ with tab_exec:
 
     master_df = pd.DataFrame(exec_rows)
     display_master = master_df.copy()
-    display_master["Logged Hours"] = display_master["Logged Hours"].map('{:,.2f} hrs'.format)
+    display_master["Reg Hours"] = display_master["Reg Hours"].map('{:,.2f} hrs'.format)
+    display_master["OT Hours"] = display_master["OT Hours"].map('{:,.2f} hrs'.format)
+    display_master["Total Hours"] = display_master["Total Hours"].map('{:,.2f} hrs'.format)
     display_master["Net Parts Cost"] = display_master["Net Parts Cost"].map('${:,.2f}'.format)
     display_master["Attributed Revenue"] = display_master["Attributed Revenue"].map('${:,.2f}'.format)
     display_master["Gross Pay (July 2026)"] = display_master["Gross Pay (July 2026)"].map('${:,.2f}'.format)
@@ -269,7 +293,7 @@ with tab_exec:
 # --- TAB 2: PAYROLL ANALYSIS ---
 with tab_pay:
     st.header("Payroll & Compensation Breakdown")
-    st.markdown("Detailed breakdown of how pay is calculated for each technician based on their compensation terms.")
+    st.markdown("Detailed breakdown of how pay is calculated for each technician, including weekly overtime (1.5x after 40 hrs/wk) for hourly techs.")
     
     pay_rows = []
     for t in sorted(VALID_TECHS):
@@ -278,8 +302,12 @@ with tab_pay:
         p_type = p_info["type"]
         
         if p_type == "Hourly":
-            pay = m["Hours"] * p_info["rate"]
-            calc_note = f"{m['Hours']:.2f} hrs × ${p_info['rate']:.2f}/hr"
+            rate = p_info["rate"]
+            pay = (m["RegHours"] * rate) + (m["OTHours"] * rate * 1.5)
+            if m["OTHours"] > 0:
+                calc_note = f"Reg: {m['RegHours']:.2f} hrs × ${rate:.2f} | OT: {m['OTHours']:.2f} hrs × ${rate*1.5:.2f}"
+            else:
+                calc_note = f"{m['RegHours']:.2f} hrs × ${rate:.2f}/hr (0 OT hrs)"
         elif p_type == "Commission":
             pay = m["Revenue"] * p_info["rate"]
             calc_note = f"{p_info['rate']*100:.0f}% of ${m['Revenue']:,.2f} revenue"
@@ -294,6 +322,9 @@ with tab_pay:
             "Pay Type": p_type,
             "Compensation Terms": p_info["details"],
             "Calculation Detail": calc_note,
+            "Reg Hours": m["RegHours"],
+            "OT Hours": m["OTHours"],
+            "Total Hours": m["Hours"],
             "Attributed Revenue": m["Revenue"],
             "Gross Pay": pay,
             "Labor % of Revenue": labor_pct
@@ -301,6 +332,9 @@ with tab_pay:
 
     pay_df = pd.DataFrame(pay_rows)
     display_pay = pay_df.copy()
+    display_pay["Reg Hours"] = display_pay["Reg Hours"].map('{:,.2f} hrs'.format)
+    display_pay["OT Hours"] = display_pay["OT Hours"].map('{:,.2f} hrs'.format)
+    display_pay["Total Hours"] = display_pay["Total Hours"].map('{:,.2f} hrs'.format)
     display_pay["Attributed Revenue"] = display_pay["Attributed Revenue"].map('${:,.2f}'.format)
     display_pay["Gross Pay"] = display_pay["Gross Pay"].map('${:,.2f}'.format)
     display_pay["Labor % of Revenue"] = display_pay["Labor % of Revenue"].map('{:.1f}%'.format)
@@ -402,18 +436,28 @@ with tab_inv:
 with tab_ts:
     st.header("Technician Timesheets Analysis")
     if ts_df is not None and not ts_df.empty and 'Tech Clean' in ts_df.columns:
-        st.subheader("Technician Hours Summary")
-        ts_sum = ts_df.groupby('Tech Clean').agg(
-            Shift_Count=('Clock In Date/Time', 'count'),
-            Total_Hours=('Hours', 'sum'),
-            Avg_Shift_Hours=('Hours', 'mean')
-        ).reset_index()
+        st.subheader("Technician Hours Summary with Weekly Overtime Breakdown")
         
-        ts_sum.rename(columns={'Tech Clean': 'Technician'}, inplace=True)
-        ts_sum['Total_Hours'] = ts_sum['Total_Hours'].map('{:,.2f} hrs'.format)
-        ts_sum['Avg_Shift_Hours'] = ts_sum['Avg_Shift_Hours'].map('{:,.2f} hrs'.format)
+        ts_weekly_summary = []
+        for t in sorted(VALID_TECHS):
+            m = tech_metrics[t]
+            if m["Hours"] > 0:
+                ts_weekly_summary.append({
+                    "Technician": t,
+                    "Total Hours": m["Hours"],
+                    "Regular Hours (<=40/wk)": m["RegHours"],
+                    "Overtime Hours (>40/wk)": m["OTHours"],
+                    "Overtime % of Total": (m["OTHours"] / m["Hours"] * 100) if m["Hours"] > 0 else 0.0
+                })
+
+        ts_sum_df = pd.DataFrame(ts_weekly_summary)
+        disp_ts_sum = ts_sum_df.copy()
+        disp_ts_sum["Total Hours"] = disp_ts_sum["Total Hours"].map('{:,.2f} hrs'.format)
+        disp_ts_sum["Regular Hours (<=40/wk)"] = disp_ts_sum["Regular Hours (<=40/wk)"].map('{:,.2f} hrs'.format)
+        disp_ts_sum["Overtime Hours (>40/wk)"] = disp_ts_sum["Overtime Hours (>40/wk)"].map('{:,.2f} hrs'.format)
+        disp_ts_sum["Overtime % of Total"] = disp_ts_sum["Overtime % of Total"].map('{:.1f}%'.format)
         
-        st.dataframe(ts_sum.sort_values(by='Shift_Count', ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(disp_ts_sum, use_container_width=True, hide_index=True)
 
         st.subheader("Detailed Shift Logs")
         show_cols = [c for c in ['Tech Clean', 'User', 'Clock In Date/Time', 'Clock Out Date/Time', 'Hours', 'Clock In Notes', 'Clock Out Notes'] if c in ts_df.columns]
