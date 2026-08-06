@@ -799,11 +799,21 @@ with tab_jobs:
         )
 
         st.markdown("---")
-        # --- FIXTURE QUANTITY BREAKDOWNS (UPDATED WITH REVENUE PER JOB) ---
+        # --- FIXTURE QUANTITY BREAKDOWNS (WITH DEPARTMENT FILTER & REVENUE PER JOB) ---
         st.subheader("Item & Fixture Quantities Breakdown by Job Title")
         st.caption("Parses fixture counts from Job Titles & Subtitles (e.g. '1/1' with Faucet & Toilet = 1 Faucet, 1 Toilet). Includes average revenue per job.")
 
-        job_title_agg = df_jobs_parsed.groupby(['Department', 'Job Type']).agg(
+        selected_bu_fixtures = st.selectbox(
+            "Filter Department / Business Unit:",
+            ["All Departments", "Lowes - Simple Installs", "Lowes - Water Heaters"],
+            key="bu_filter_fixtures"
+        )
+
+        df_fixtures_filtered = df_jobs_parsed.copy()
+        if selected_bu_fixtures != "All Departments":
+            df_fixtures_filtered = df_fixtures_filtered[df_fixtures_filtered['Department'] == selected_bu_fixtures]
+
+        job_title_agg = df_fixtures_filtered.groupby(['Department', 'Job Type']).agg(
             Job_Count=('Job Type', 'count'),
             Total_Billed=('Invoice Total', 'sum'),
             Avg_Revenue_Per_Job=('Invoice Total', 'mean'),
@@ -838,7 +848,7 @@ with tab_jobs:
         )
 
         st.subheader("Total Installed Fixtures Breakdown by Technician")
-        tech_fixture_agg = df_jobs_parsed.groupby(['Technician', 'Department']).agg(
+        tech_fixture_agg = df_fixtures_filtered.groupby(['Technician', 'Department']).agg(
             Total_Jobs=('Job Type', 'count'),
             Toilets=('Toilet', 'sum'),
             Faucets=('Faucet', 'sum'),
