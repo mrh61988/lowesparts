@@ -43,12 +43,13 @@ PAY_STRUCTURE = {
 VALID_TECHS = list(PAY_STRUCTURE.keys())
 
 # --- HELPER FUNCTIONS ---
-def find_col(df, keywords):
-    """Fuzzy column matcher handling hidden line breaks, newlines, and spaces in Google Sheets."""
-    for c in df.columns:
-        c_clean = str(c).lower().replace('\n', ' ')
-        if all(k.lower() in c_clean for k in keywords):
-            return c
+def find_col(df, keyword_lists):
+    """Fuzzy column matcher handling hidden line breaks, newlines, and alternate names."""
+    for keywords in keyword_lists:
+        for c in df.columns:
+            c_clean = str(c).lower().replace('\n', ' ')
+            if all(k.lower() in c_clean for k in keywords):
+                return c
     return None
 
 def clean_sku(val):
@@ -88,7 +89,7 @@ def get_first_valid_tech(tech_str):
     return None
 
 def parse_min_max(val):
-    """Parses warehouse min/max formatted string like '70 / 140' or '4 / 8'."""
+    """Parses warehouse min/max formats (e.g. '70 / 140', '4-8', '4 8')."""
     val_str = str(val).strip()
     if '/' in val_str:
         parts = [p.strip() for p in val_str.split('/')]
@@ -97,7 +98,15 @@ def parse_min_max(val):
         try:
             return int(float(c_min)), int(float(c_max))
         except:
-            return 0, 0
+            pass
+            
+    # Fallback regex search for any two numbers in the string
+    nums = re.findall(r'\d+', val_str)
+    if len(nums) >= 2:
+        return int(nums[0]), int(nums[1])
+    elif len(nums) == 1:
+        return int(nums[0]), 0
+        
     return 0, 0
 
 def map_dept_to_bu(dept):
@@ -185,13 +194,6 @@ uploaded_timesheets = st.sidebar.file_uploader("Upload 'timesheets.csv'", type=[
 
 TARGET_BUS = ['Lowes - Simple Installs', 'Lowes - Water Heaters']
 
-# Display active tech roster in sidebar without showing pay rates
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 👷 Tech Roster")
-for t, p in PAY_STRUCTURE.items():
-    loc_tag = "🌵 Tucson" if p["location"] == "Tucson" else "📍 Phoenix"
-    st.sidebar.markdown(f"**{t}** ({loc_tag})")
-
 # --- PRE-PROCESS ALL DATA ONCE ---
 # 1. Parts Data from Google Sheets
 sheets_dict = load_google_sheet(sheet_url)
@@ -201,6 +203,7 @@ df_current_minmax = pd.DataFrame()
 if sheets_dict:
     sheet_names = list(sheets_dict.keys())
     
+    # Identify parts sheets
     simple_sheet = sheet_names[0] if len(sheet_names) > 0 else None
     wh_sheet = sheet_names[1] if len(sheet_names) > 1 else simple_sheet
     
@@ -208,7 +211,7 @@ if sheets_dict:
     df_wh_p = process_parts_df(sheets_dict[wh_sheet], 'Lowes - Water Heaters') if wh_sheet else pd.DataFrame()
     df_parts = pd.concat([df_simple_p, df_wh_p], ignore_index=True)
     
-    # Identify current Min/Max sheet
+    # Identify current Min/Max sheet (e.g. "Nexsys Min/Max")
     minmax_sheet = None
     for name in sheet_names:
         if 'min' in name.lower() and 'max' in name.lower():
@@ -218,31 +221,36 @@ if sheets_dict:
     if minmax_sheet and minmax_sheet in sheets_dict:
         raw_minmax = sheets_dict[minmax_sheet].copy()
         
-        # Fuzzy column locator to bypass Line Breaks and spacing issues
-        c_sku = find_col(raw_minmax, ['sku'])
-        c_minmax = find_col(raw_minmax, ['warehouse', 'min'])
-        c_qty = find_col(raw_minmax, ['qty'])
-        c_dept = find_col(raw_minmax, ['department'])
-        c_item = find_col(raw_minmax, ['item'])
+        # Fuzzy column locator with robust fallbacks
+        c_sku = find_col(raw_minmax, [['sku'], ['item #'], ['part']])
+        c_minmax = find_col(raw_minmax, [['warehouse', 'min'], ['min', 'max'], ['min/max']])
+        c_qty = find_col(raw_minmax, [['qty'], ['quantity'], ['on hand'], ['stock']])
+        c_dept = find_col(raw_minmax, [['department'], ['business unit'], ['bu']])
+        c_item = find_col(raw_minmax, [['item name'], ['description'], ['item']])
 
-        if c_sku and c_minmax:
+        if c_sku:
             raw_minmax['SKU_clean'] = raw_minmax[c_sku].apply(clean_sku)
-            parsed_mins_maxs = raw_minmax[c_minmax].apply(parse_min_max).tolist()
-            raw_minmax[['Current Min', 'Current Max']] = parsed_mins_maxs
             
+            if c_minmax:
+                parsed_mins_maxs = raw_minmax[c_minmax].apply(parse_min_max).tolist()
+                raw_minmax[['Current Min', 'Current Max']] = parsed_mins_maxs
+            else:
+                raw_minmax['Current Min'] = 0
+                raw_minmax['Current Max'] = 0
+                
             if c_qty:
                 raw_minmax['Current On Hand'] = pd.to_numeric(raw_minmax[c_qty], errors='coerce').fillna(0).astype(int)
             else:
                 raw_minmax['Current On Hand'] = 0
                 
             if c_dept:
-                raw_minmax['Business Unit'] = raw_minmax[c_dept].apply(map_dept_to_bu)
+                raw_minmax['Business Unit_sheet'] = raw_minmax[c_dept].apply(map_dept_to_bu)
             else:
-                raw_minmax['Business Unit'] = 'Unknown'
+                raw_minmax['Business Unit_sheet'] = 'Unknown'
                 
             raw_minmax['Item Name'] = raw_minmax[c_item] if c_item else ''
             
-            df_current_minmax = raw_minmax[['SKU_clean', 'Item Name', 'Business Unit', 'Current On Hand', 'Current Min', 'Current Max']].copy()
+            df_current_minmax = raw_minmax[['SKU_clean', 'Item Name', 'Business Unit_sheet', 'Current On Hand', 'Current Min', 'Current Max']].copy()
 
 # 2. Jobs Data
 raw_jobs_df = read_uploaded_csv(uploaded_jobs)
@@ -413,10 +421,6 @@ with tab_minmax:
     st.markdown("""
     Comparison of **Current Warehouse Min/Max settings** (from `Nexsys Min/Max` sheet) against **Suggested 1.5-Week Inventory Targets** 
     calculated from historical demand (July 2026 / 4.43 weeks).
-    - **Current Min / Max:** Active warehouse min/max levels directly from Google Sheets.
-    - **Suggested Min (1.0 Wk):** Reorder point equal to 1 week of demand.
-    - **Target Stock (1.5 Wks):** Recommended ideal shelf stock level.
-    - **Suggested Max (2.0 Wks):** Order-up-to ceiling level.
     """)
     
     if not df_parts.empty:
@@ -434,18 +438,18 @@ with tab_minmax:
         item_usage['Target_Stock_Qty'] = np.ceil(item_usage['Weekly_Avg_Qty'] * 1.5).astype(int)
         item_usage['Max_Stock_Qty'] = np.maximum(np.ceil(item_usage['Weekly_Avg_Qty'] * 2.0), item_usage['Min_Stock_Qty'] + 1).astype(int)
         
-        # Perform outer merge exclusively on SKU with Current Min/Max Sheet
+        # Perform outer merge exclusively on SKU_clean to handle Name/Dept mismatches
         if not df_current_minmax.empty:
             merged_minmax = pd.merge(
-                df_current_minmax,
-                item_usage[['SKU_clean', 'Business Unit', 'Item', 'Total_Net_Qty', 'Weekly_Avg_Qty', 'Min_Stock_Qty', 'Target_Stock_Qty', 'Max_Stock_Qty']], 
+                item_usage,
+                df_current_minmax, 
                 on=['SKU_clean'], 
                 how='outer'
             )
             
             # Resolve Column Combos safely
-            merged_minmax['Business Unit'] = merged_minmax['Business Unit_y'].fillna(merged_minmax['Business Unit_x']).fillna('Unknown')
-            merged_minmax['Item Description'] = merged_minmax['Item Name'].fillna(merged_minmax['Item']).fillna('')
+            merged_minmax['Business Unit'] = merged_minmax['Business Unit'].fillna(merged_minmax['Business Unit_sheet']).fillna('Unknown')
+            merged_minmax['Item Description'] = merged_minmax['Item'].fillna(merged_minmax['Item Name']).fillna('')
             merged_minmax['Total_Net_Qty'] = merged_minmax['Total_Net_Qty'].fillna(0).astype(int)
             merged_minmax['Weekly_Avg_Qty'] = merged_minmax['Weekly_Avg_Qty'].fillna(0.0)
             
@@ -457,7 +461,6 @@ with tab_minmax:
             merged_minmax['Target_Stock_Qty'] = merged_minmax['Target_Stock_Qty'].fillna(0).astype(int)
             merged_minmax['Max_Stock_Qty'] = merged_minmax['Max_Stock_Qty'].fillna(0).astype(int)
             
-            # Map SKU string properly
             merged_minmax['SKU'] = merged_minmax['SKU_clean']
             
         else:
