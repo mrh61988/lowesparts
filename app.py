@@ -26,7 +26,7 @@ div[data-testid="stDataFrame"] {
 """, unsafe_allow_html=True)
 
 st.title("NexSys Operations & Financial Analyzer")
-st.markdown("Detailed tabular analysis across Parts Usage, Jobs, Invoices, Timesheets, and **Warehouse Replenishment Targets** for **Simple Installs** and **Water Heaters**.")
+st.markdown("Detailed tabular analysis across Parts Usage, Jobs, Invoices, Timesheets, Warehouse Inventory Targets, and **Replenishment Efficiency** for **Simple Installs** and **Water Heaters**.")
 
 # --- VALID TECHNICIANS LIST & PAY STRUCTURE ---
 PAY_STRUCTURE = {
@@ -116,7 +116,7 @@ def map_dept_to_bu(dept):
         return 'Lowes - Water Heaters'
     return 'Other'
 
-# Cache expires every 15 seconds to ensure fresh Google Sheet tabs are pulled!
+# Cache expires every 15 seconds to ensure fresh Google Sheet tabs are pulled
 @st.cache_data(ttl=15)
 def fetch_live_google_sheet(url):
     """Reads a public Google Sheet URL into a dictionary of DataFrames."""
@@ -427,12 +427,9 @@ with tab_parts:
 with tab_minmax:
     st.header("📦 Warehouse Min/Max Analysis & Comparison")
     st.markdown("""
-    Comparison of **Current Warehouse Min/Max settings** against **Suggested 1.5-Week Inventory Targets** 
-    calculated from historical demand (July 2026 / 4.43 weeks).
-    - **Current Min / Max:** Active warehouse min/max levels in Google Sheets.
-    - **Suggested Min (1.0 Wk):** Reorder point equal to 1 week of demand.
-    - **Target Stock (1.5 Wks):** Recommended shelf stock level.
-    - **Suggested Max (2.0 Wks):** Order-up-to ceiling level.
+    Comparison of **Current Warehouse Min/Max settings** against **Suggested 1.5-Week Inventory Targets** calculated from historical demand (July 2026 / 4.43 weeks).
+    
+    *Only triggers an action if the suggested Min or Max deviates by **10% or more** from the current setting in Google Sheets. Organized with the highest priority items at the top.*
     """)
     
     if not df_parts.empty:
@@ -486,7 +483,7 @@ with tab_minmax:
         merged_minmax['Min (Curr ➔ Sug)'] = merged_minmax['Current Min'].astype(str) + " ➔ " + merged_minmax['Min_Stock_Qty'].astype(str)
         merged_minmax['Max (Curr ➔ Sug)'] = merged_minmax['Current Max'].astype(str) + " ➔ " + merged_minmax['Max_Stock_Qty'].astype(str)
 
-        # Recommendation Logic
+        # Recommendation Logic with 10% threshold buffer
         def get_minmax_recommendation(row):
             c_min, c_max = row['Current Min'], row['Current Max']
             s_min, s_max = row['Min_Stock_Qty'], row['Max_Stock_Qty']
@@ -499,27 +496,57 @@ with tab_minmax:
             d_min = s_min - c_min
             d_max = s_max - c_max
             
-            if d_min > 0 and d_max > 0:
-                return f"⬆️ Inc Min (+{d_min}) & Max (+{d_max})"
-            elif d_min < 0 and d_max < 0:
-                return f"⬇️ Dec Min ({d_min}) & Max ({d_max})"
-            elif d_min > 0:
-                return f"⬆️ Inc Min (+{d_min})"
-            elif d_min < 0:
-                return f"⬇️ Dec Min ({d_min})"
-            elif d_max > 0:
-                return f"⬆️ Inc Max (+{d_max})"
-            elif d_max < 0:
-                return f"⬇️ Dec Max ({d_max})"
-            else:
+            # Check if difference is >= 10%
+            min_flag = abs(d_min) >= (0.10 * c_min) if c_min > 0 else (s_min > 0)
+            max_flag = abs(d_max) >= (0.10 * c_max) if c_max > 0 else (s_max > 0)
+
+            if not min_flag and not max_flag:
                 return "🟢 On Target"
 
+            rec = []
+            if min_flag:
+                if d_min > 0:
+                    rec.append(f"Inc Min (+{d_min})")
+                else:
+                    rec.append(f"Dec Min ({d_min})")
+                    
+            if max_flag:
+                if d_max > 0:
+                    rec.append(f"Inc Max (+{d_max})")
+                else:
+                    rec.append(f"Dec Max ({d_max})")
+                    
+            if len(rec) == 2:
+                if d_min > 0 and d_max > 0:
+                    return f"⬆️ {rec[0]} & {rec[1].replace('Inc ', '')}"
+                elif d_min < 0 and d_max < 0:
+                    return f"⬇️ {rec[0]} & {rec[1].replace('Dec ', '')}"
+                else:
+                    return f"🔄 {rec[0]} & {rec[1]}"
+            elif len(rec) == 1:
+                if "Inc" in rec[0]:
+                    return f"⬆️ {rec[0]}"
+                else:
+                    return f"⬇️ {rec[0]}"
+
+            return "🟢 On Target"
+
         merged_minmax['Action / Rec'] = merged_minmax.apply(get_minmax_recommendation, axis=1)
+
+        # Priority Sorter for the dataframe (so important items float to the top)
+        def get_sort_priority(action_str):
+            if "⚠️" in action_str: return 1
+            if "⬆️" in action_str or "⬇️" in action_str or "🔄" in action_str: return 2
+            if "🟢" in action_str: return 3
+            return 4
+
+        merged_minmax['Sort_Priority'] = merged_minmax['Action / Rec'].apply(get_sort_priority)
 
         def render_comparison_table(bu_name):
             bu_df = merged_minmax[merged_minmax['Business Unit'] == bu_name].copy()
             if not bu_df.empty:
-                bu_df.sort_values(by='Target_Stock_Qty', ascending=False, inplace=True)
+                # Sort by action priority first, then by target stock volume
+                bu_df.sort_values(by=['Sort_Priority', 'Target_Stock_Qty'], ascending=[True, False], inplace=True)
                 
                 bu_df.rename(columns={
                     'SKU': 'SKU',
