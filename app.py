@@ -37,22 +37,16 @@ def normalize_single_tech(name):
     if re.search(r'\btanner\b', name_lower): return "Tanner LaForge"
     return name_str
 
-def clean_and_filter_techs(tech_str):
-    """Splits multi-tech strings, maps names, and retains only valid techs."""
+def get_first_valid_tech(tech_str):
+    """Attributes 100% of credit to the FIRST listed valid active technician."""
     if pd.isna(tech_str) or not str(tech_str).strip():
         return None
     
     parts = [p.strip() for p in str(tech_str).split(',')]
-    valid_parts = []
-    
     for p in parts:
         norm = normalize_single_tech(p)
         if norm in VALID_TECHS:
-            if norm not in valid_parts:
-                valid_parts.append(norm)
-                
-    if valid_parts:
-        return ", ".join(valid_parts)
+            return norm
     return None
 
 @st.cache_data
@@ -94,7 +88,7 @@ def process_parts_df(df, business_unit):
             df.loc[is_return, 'Qty'] = -df.loc[is_return, 'Qty']
 
     df['Transferred To'] = df['Transferred To'].astype(str).str.replace("Matt's TransitFleet", "Matt S")
-    df['Tech'] = df['Transferred To'].apply(clean_and_filter_techs)
+    df['Tech'] = df['Transferred To'].apply(get_first_valid_tech)
     df = df[df['Tech'].notna()].copy()
     df['Business Unit'] = business_unit
     return df
@@ -141,16 +135,16 @@ if sheets_dict:
     df_wh_p = process_parts_df(sheets_dict[wh_sheet], 'Lowes - Water Heaters') if wh_sheet else pd.DataFrame()
     df_parts = pd.concat([df_simple_p, df_wh_p], ignore_index=True)
 
-# 2. Jobs Data
+# 2. Jobs Data (Attributing full credit to the first listed tech)
 raw_jobs_df = read_uploaded_csv(uploaded_jobs)
 jobs_filtered = pd.DataFrame()
 if raw_jobs_df is not None and 'Business Unit' in raw_jobs_df.columns:
     jobs_filtered = raw_jobs_df[raw_jobs_df['Business Unit'].isin(TARGET_BUS)].copy()
-    jobs_filtered['Tech Clean'] = jobs_filtered['Assigned Team Members'].apply(clean_and_filter_techs)
+    jobs_filtered['Tech Clean'] = jobs_filtered['Assigned Team Members'].apply(get_first_valid_tech)
     jobs_filtered = jobs_filtered[jobs_filtered['Tech Clean'].notna()].copy()
     jobs_filtered['Invoice Amount'] = pd.to_numeric(jobs_filtered['Total Invoice Amount'], errors='coerce').fillna(0)
 
-# 3. Invoices Data (Excludes Draft & Void)
+# 3. Invoices Data (Excludes Draft & Void; attributing full credit to first listed tech)
 raw_inv_df = read_uploaded_csv(uploaded_invoices)
 inv_filtered = pd.DataFrame()
 if raw_inv_df is not None:
@@ -160,7 +154,7 @@ if raw_inv_df is not None:
             raw_inv_df[bu_col].isin(TARGET_BUS) & 
             ~raw_inv_df['Status'].astype(str).str.lower().str.contains('draft|void', na=False)
         ].copy()
-        inv_filtered['Tech Clean'] = inv_filtered['Assigned Team Members'].apply(clean_and_filter_techs)
+        inv_filtered['Tech Clean'] = inv_filtered['Assigned Team Members'].apply(get_first_valid_tech)
         inv_filtered = inv_filtered[inv_filtered['Tech Clean'].notna()].copy()
         inv_filtered['Invoice Total'] = pd.to_numeric(inv_filtered['Invoice Total'], errors='coerce').fillna(0)
         inv_filtered['Business Unit Clean'] = inv_filtered[bu_col]
@@ -168,7 +162,7 @@ if raw_inv_df is not None:
 # 4. Timesheets Data with Weekly Overtime Logic
 ts_df = read_uploaded_csv(uploaded_timesheets)
 if ts_df is not None and 'Clock In Date/Time' in ts_df.columns:
-    ts_df['Tech Clean'] = ts_df['User'].apply(clean_and_filter_techs)
+    ts_df['Tech Clean'] = ts_df['User'].apply(get_first_valid_tech)
     ts_df = ts_df[ts_df['Tech Clean'].notna()].copy()
     ts_df['In'] = pd.to_datetime(ts_df['Clock In Date/Time'], errors='coerce')
     ts_df['Out'] = pd.to_datetime(ts_df['Clock Out Date/Time'], errors='coerce')
@@ -196,21 +190,14 @@ if not df_parts.empty:
 if not inv_filtered.empty:
     for _, row in inv_filtered.iterrows():
         t_clean = row['Tech Clean']
-        if pd.isna(t_clean): continue
-        t_list = [x.strip() for x in t_clean.split(',')]
-        split_rev = row['Invoice Total'] / len(t_list)
-        for t in t_list:
-            if t in tech_metrics:
-                tech_metrics[t]["Revenue"] += split_rev
+        if pd.notna(t_clean) and t_clean in tech_metrics:
+            tech_metrics[t_clean]["Revenue"] += row['Invoice Total']
 
 if not jobs_filtered.empty:
     for _, row in jobs_filtered.iterrows():
         t_clean = row['Tech Clean']
-        if pd.isna(t_clean): continue
-        t_list = [x.strip() for x in t_clean.split(',')]
-        for t in t_list:
-            if t in tech_metrics:
-                tech_metrics[t]["Jobs"] += 1
+        if pd.notna(t_clean) and t_clean in tech_metrics:
+            tech_metrics[t_clean]["Jobs"] += 1
 
 if ts_df is not None and not ts_df.empty:
     weekly_hrs = ts_df.groupby(['Tech Clean', 'Week'])['Hours'].sum().reset_index()
@@ -337,7 +324,7 @@ with tab_jobs:
 # --- TAB 4: INVOICES ANALYSIS ---
 with tab_inv:
     st.header("Invoices Analysis")
-    st.caption("Filtered exclusively for active technicians (Draft & Void invoices excluded).")
+    st.caption("Filtered exclusively for active technicians (Draft & Void invoices excluded). Full credit attributed to the first listed tech.")
     
     if not inv_filtered.empty:
         st.subheader("Invoices Summary by Tech, Business Unit & Parent Job Title")
@@ -407,7 +394,8 @@ with tab_test:
     st.header("🧪 Test Section: BU-Level Replenishment Efficiency & Material Ratios")
     st.markdown("""
     This section explicitly separates **Simple Installs** and **Water Heaters** to evaluate technician replenishment 
-    intensity against expected business unit ratios. *Note: Mathew Hodges is based in Tucson and does not pull from the main warehouse.*
+    intensity against expected business unit ratios. Full job and revenue credit is attributed to the first listed technician.
+    *Note: Mathew Hodges is based in Tucson and does not pull from the main warehouse.*
     """)
 
     def get_bu_efficiency_table(bu_name, max_material_ratio_threshold):
@@ -421,19 +409,13 @@ with tab_test:
 
             j_count = 0
             if not jobs_filtered.empty:
-                j_sub = jobs_filtered[jobs_filtered['Business Unit'] == bu_name]
-                for _, r in j_sub.iterrows():
-                    t_list = [x.strip() for x in r['Tech Clean'].split(',')]
-                    if t in t_list:
-                        j_count += 1
+                j_sub = jobs_filtered[(jobs_filtered['Business Unit'] == bu_name) & (jobs_filtered['Tech Clean'] == t)]
+                j_count = len(j_sub)
 
             rev = 0.0
             if not inv_filtered.empty:
-                i_sub = inv_filtered[inv_filtered['Business Unit Clean'] == bu_name]
-                for _, r in i_sub.iterrows():
-                    t_list = [x.strip() for x in r['Tech Clean'].split(',')]
-                    if t in t_list:
-                        rev += r['Invoice Total'] / len(t_list)
+                i_sub = inv_filtered[(inv_filtered['Business Unit Clean'] == bu_name) & (inv_filtered['Tech Clean'] == t)]
+                rev = i_sub['Invoice Total'].sum()
 
             cost_per_job = (parts_cost / j_count) if j_count > 0 else 0.0
             mat_pct = (parts_cost / rev * 100) if rev > 0 else 0.0
