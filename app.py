@@ -201,7 +201,6 @@ def parse_job_fixtures(title_str, summary_str=""):
     fraction_match = re.search(r'\b(\d+)\s*/\s*(\d+)\b', combined_text)
     summary_is_num = re.match(r'^\d+$', summary_text)
     
-    # Standalone number in subtitle for a single matched fixture type
     if summary_is_num and len(found_fixtures) == 1:
         counts[found_fixtures[0]] = int(summary_text)
     elif fraction_match and len(found_fixtures) == 2:
@@ -1025,9 +1024,9 @@ with tab_ts:
 
 # --- TAB 7: TEST SECTION - BU & ITEM LEVEL EFFICIENCY ---
 with tab_test:
-    st.header("🧪 Test Section: Item-Level Usage, Revenue & Efficiency Analysis")
+    st.header("🧪 Test Section: Advanced Operations Analytics")
     st.markdown("""
-    Test environment for evaluating item-level parts consumption linked directly to technician revenue generation, alongside business unit replenishment efficiency.
+    Test environment for evaluating item-level parts consumption linked directly to technician revenue generation, business unit replenishment efficiency, quality control callbacks, and regional branch benchmarking.
     """)
 
     st.markdown("---")
@@ -1284,3 +1283,125 @@ with tab_test:
         st.dataframe(wh_eff_df, use_container_width=True, hide_index=True)
     else:
         st.info("No data available for Water Heaters.")
+
+    st.markdown("---")
+    # --- TEST TABLE 5: Quality Control, Callbacks & Warranty Analysis ---
+    st.subheader("5. 🛡️ Quality Control, Callbacks & Warranty Analysis")
+    st.markdown("""
+    Tracks $0 billed jobs, recalls, warranty visits, and unbilled wrench time across technicians and job types to identify potential quality control issues and labor leakage.
+    """)
+
+    if not jobs_filtered.empty and 'df_jobs_parsed' in locals():
+        df_jobs_qc = df_jobs_parsed.copy()
+        df_jobs_qc['Is_Unbilled'] = df_jobs_qc['Invoice Total'] == 0
+
+        # 5A. Technician Quality & Callback Scorecard
+        qc_tech_rows = []
+        for t in sorted(VALID_TECHS):
+            t_jobs = df_jobs_qc[df_jobs_qc['Technician'] == t]
+            tot_j = len(t_jobs)
+            if tot_j > 0:
+                billed_j = len(t_jobs[~t_jobs['Is_Unbilled']])
+                unbilled_j = len(t_jobs[t_jobs['Is_Unbilled']])
+                cb_rate = (unbilled_j / tot_j * 100.0)
+                unbilled_hrs = t_jobs[t_jobs['Is_Unbilled']]['Job Duration Hours'].sum()
+                
+                p_info = PAY_STRUCTURE[t]
+                if p_info['type'] == 'Hourly':
+                    hr_rate = p_info['rate']
+                elif p_info['type'] == 'Salary':
+                    hr_rate = p_info['annual'] / 2080.0
+                else:
+                    hr_rate = 35.0  # Assumed labor value rate for commission tech wrench time
+                    
+                est_cost = unbilled_hrs * hr_rate
+                
+                qc_tech_rows.append({
+                    "Technician": t,
+                    "Total Jobs": tot_j,
+                    "Billed Jobs": billed_j,
+                    "$0 / Callback Jobs": unbilled_j,
+                    "Callback Rate": cb_rate,
+                    "Unbilled Wrench Time": unbilled_hrs,
+                    "Est. Labor Cost of $0 Jobs": est_cost
+                })
+
+        df_qc_tech = pd.DataFrame(qc_tech_rows)
+        if not df_qc_tech.empty:
+            df_qc_tech["Callback Rate"] = df_qc_tech["Callback Rate"].map('{:.2f}%'.format)
+            df_qc_tech["Unbilled Wrench Time"] = df_qc_tech["Unbilled Wrench Time"].map('{:.2f} hrs'.format)
+            df_qc_tech["Est. Labor Cost of $0 Jobs"] = df_qc_tech["Est. Labor Cost of $0 Jobs"].map('${:,.2f}'.format)
+            
+            st.markdown("##### A. Technician Quality & Callback Scorecard")
+            st.dataframe(df_qc_tech, use_container_width=True, hide_index=True)
+
+        # 5B. Callback Breakdown by Job Type
+        st.markdown("##### B. Callback & $0 Job Breakdown by Job Type")
+        qc_job_agg = df_jobs_qc.groupby('Job Type').agg(
+            Total_Jobs=('Job Type', 'count'),
+            Unbilled_Jobs=('Is_Unbilled', 'sum'),
+            Total_Unbilled_Duration=('Job Duration Hours', lambda x: x[df_jobs_qc.loc[x.index, 'Is_Unbilled']].sum())
+        ).reset_index()
+
+        qc_job_agg['Callback Rate'] = (qc_job_agg['Unbilled_Jobs'] / qc_job_agg['Total_Jobs'] * 100.0)
+        qc_job_agg.sort_values(by=['Unbilled_Jobs', 'Total_Jobs'], ascending=[False, False], inplace=True)
+        qc_job_agg.rename(columns={'Unbilled_Jobs': '$0 / Callback Jobs'}, inplace=True)
+
+        qc_job_agg['Callback Rate'] = qc_job_agg['Callback Rate'].map('{:.2f}%'.format)
+        qc_job_agg['Total_Unbilled_Duration'] = qc_job_agg['Total_Unbilled_Duration'].map('{:.2f} hrs'.format)
+
+        st.dataframe(
+            qc_job_agg[['Job Type', 'Total_Jobs', '$0 / Callback Jobs', 'Callback Rate', 'Total_Unbilled_Duration']], 
+            use_container_width=True, 
+            hide_index=True,
+            column_config={
+                "Job Type": st.column_config.TextColumn("Job Type", width="medium"),
+                "Total_Jobs": st.column_config.NumberColumn("Total Jobs", width="small"),
+                "$0 / Callback Jobs": st.column_config.NumberColumn("$0 Jobs", width="small"),
+                "Callback Rate": st.column_config.TextColumn("Callback Rate", width="small"),
+                "Total_Unbilled_Duration": st.column_config.TextColumn("Unbilled Wrench Hours", width="medium")
+            }
+        )
+    else:
+        st.info("Upload 'all jobs.csv' to analyze Quality Control & Callbacks.")
+
+    st.markdown("---")
+    # --- TEST TABLE 6: Regional Branch Benchmarking ---
+    st.subheader("6. 📍 Regional Branch Benchmarking (Phoenix vs. Tucson)")
+    st.markdown("""
+    Comparative operational scorecard evaluating volume, ticket size, technician output, and replenishment efficiency across regional locations.
+    """)
+
+    reg_rows = []
+    for loc in ["Phoenix", "Tucson"]:
+        loc_techs = [t for t, p in PAY_STRUCTURE.items() if p["location"] == loc]
+        active_tech_count = len(loc_techs)
+        
+        loc_rev = inv_filtered[inv_filtered['Tech Clean'].isin(loc_techs)]['Invoice Total'].sum() if not inv_filtered.empty else 0.0
+        job_cnt = len(jobs_filtered[jobs_filtered['Tech Clean'].isin(loc_techs)]) if not jobs_filtered.empty else 0
+        parts_cost = df_parts[df_parts['Tech'].isin(loc_techs)]['Total Value'].sum() if not df_parts.empty else 0.0
+
+        avg_rev_per_job = (loc_rev / job_cnt) if job_cnt > 0 else 0.0
+        avg_rev_per_tech = (loc_rev / active_tech_count) if active_tech_count > 0 else 0.0
+        mat_ratio = (parts_cost / loc_rev * 100.0) if loc_rev > 0 else 0.0
+
+        reg_rows.append({
+            "Branch Location": loc,
+            "Active Technicians": active_tech_count,
+            "Jobs Completed": job_cnt,
+            "Total Revenue": loc_rev,
+            "Avg Revenue / Job": avg_rev_per_job,
+            "Avg Revenue / Tech": avg_rev_per_tech,
+            "Net Warehouse Restocks": parts_cost,
+            "Material % of Revenue": mat_ratio
+        })
+
+    df_reg = pd.DataFrame(reg_rows)
+    if not df_reg.empty:
+        df_reg["Total Revenue"] = df_reg["Total Revenue"].map('${:,.2f}'.format)
+        df_reg["Avg Revenue / Job"] = df_reg["Avg Revenue / Job"].map('${:,.2f}'.format)
+        df_reg["Avg Revenue / Tech"] = df_reg["Avg Revenue / Tech"].map('${:,.2f}'.format)
+        df_reg["Net Warehouse Restocks"] = df_reg["Net Warehouse Restocks"].map('${:,.2f}'.format)
+        df_reg["Material % of Revenue"] = df_reg["Material % of Revenue"].map('{:.2f}%'.format)
+
+        st.dataframe(df_reg, use_container_width=True, hide_index=True)
