@@ -177,6 +177,13 @@ uploaded_timesheets = st.sidebar.file_uploader("Upload 'timesheets.csv'", type=[
 
 TARGET_BUS = ['Lowes - Simple Installs', 'Lowes - Water Heaters']
 
+# Display active tech roster in sidebar without showing pay rates
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 👷 Tech Roster")
+for t, p in PAY_STRUCTURE.items():
+    loc_tag = "🌵 Tucson" if p["location"] == "Tucson" else "📍 Phoenix"
+    st.sidebar.markdown(f"**{t}** ({loc_tag})")
+
 # --- PRE-PROCESS ALL DATA ONCE ---
 # 1. Parts Data from Google Sheets
 sheets_dict = load_google_sheet(sheet_url)
@@ -203,6 +210,10 @@ if sheets_dict:
             
     if minmax_sheet and minmax_sheet in sheets_dict:
         raw_minmax = sheets_dict[minmax_sheet].copy()
+        
+        # FIX: Force flatten column names to remove newlines (e.g. 'Warehouse\nMin/Max' -> 'Warehouse Min/Max')
+        raw_minmax.columns = raw_minmax.columns.str.replace(r'\n', ' ', regex=True).str.strip()
+        
         if 'SKU' in raw_minmax.columns and 'Warehouse Min/Max' in raw_minmax.columns:
             raw_minmax['SKU'] = raw_minmax['SKU'].apply(clean_sku)
             parsed_mins_maxs = raw_minmax['Warehouse Min/Max'].apply(parse_min_max).tolist()
@@ -488,6 +499,7 @@ with tab_minmax:
                 
                 bu_df['Wk Avg'] = bu_df['Wk Avg'].map('{:.2f}'.format)
                 
+                # Streamlined columns so no horizontal scrolling is required
                 show_cols = [
                     'SKU', 'Item Description', 'July Net', 'Wk Avg', 
                     'On Hand', 'Min (Curr ➔ Sug)', 'Max (Curr ➔ Sug)', 'Target (1.5 Wk)', 
