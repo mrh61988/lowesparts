@@ -2,20 +2,20 @@ import streamlit as st
 import pandas as pd
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="NexSys Operations & Payroll Analyzer", layout="wide")
+st.set_page_config(page_title="NexSys Operations & Financial Analyzer", layout="wide")
 st.title("NexSys Operations & Financial Analyzer")
-st.markdown("Detailed tabular analysis across Parts Usage, Jobs, Invoices, Timesheets, Payroll, and **Replenishment Efficiency** for **Simple Installs** and **Water Heaters**.")
+st.markdown("Detailed tabular analysis across Parts Usage, Jobs, Invoices, Timesheets, and **Replenishment Efficiency** for **Simple Installs** and **Water Heaters**.")
 
 # --- VALID TECHNICIANS LIST & PAY STRUCTURE ---
 PAY_STRUCTURE = {
-    "Nate Smith": {"type": "Hourly", "rate": 22.50, "details": "$22.50/hr (1.5x OT > 40 hrs/wk)", "location": "Phoenix"},
-    "Bill Black": {"type": "Hourly", "rate": 25.00, "details": "$25.00/hr (1.5x OT > 40 hrs/wk)", "location": "Phoenix"},
-    "Sean Marble": {"type": "Salary", "annual": 70000.0, "details": "$70,000/yr ($5,833.33/mo)", "location": "Phoenix"},
-    "Tanner LaForge": {"type": "Hourly", "rate": 25.00, "details": "$25.00/hr (1.5x OT > 40 hrs/wk)", "location": "Phoenix"},
-    "Erik Tange": {"type": "Commission", "rate": 0.34, "details": "34% of Invoice Revenue", "location": "Phoenix"},
-    "Bryan Pickett": {"type": "Commission", "rate": 0.34, "details": "34% of Invoice Revenue", "location": "Phoenix"},
-    "Matt Schlosser": {"type": "Hourly", "rate": 25.00, "details": "$25.00/hr (1.5x OT > 40 hrs/wk)", "location": "Phoenix"},
-    "Mathew Hodges": {"type": "Salary", "annual": 65000.0, "details": "$65,000/yr ($5,416.67/mo)", "location": "Tucson"}
+    "Nate Smith": {"type": "Hourly", "rate": 22.50, "location": "Phoenix"},
+    "Bill Black": {"type": "Hourly", "rate": 25.00, "location": "Phoenix"},
+    "Sean Marble": {"type": "Salary", "annual": 70000.0, "location": "Phoenix"},
+    "Tanner LaForge": {"type": "Hourly", "rate": 25.00, "location": "Phoenix"},
+    "Erik Tange": {"type": "Commission", "rate": 0.34, "location": "Phoenix"},
+    "Bryan Pickett": {"type": "Commission", "rate": 0.34, "location": "Phoenix"},
+    "Matt Schlosser": {"type": "Hourly", "rate": 25.00, "location": "Phoenix"},
+    "Mathew Hodges": {"type": "Salary", "annual": 65000.0, "location": "Tucson"}
 }
 
 VALID_TECHS = list(PAY_STRUCTURE.keys())
@@ -125,13 +125,6 @@ uploaded_timesheets = st.sidebar.file_uploader("Upload 'timesheets.csv'", type=[
 
 TARGET_BUS = ['Lowes - Simple Installs', 'Lowes - Water Heaters']
 
-# Display active tech pay structure in sidebar
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 👷 Tech Roster & Pay Structure")
-for t, p in PAY_STRUCTURE.items():
-    loc_tag = "🌵 Tucson" if p["location"] == "Tucson" else "📍 Phoenix"
-    st.sidebar.markdown(f"**{t}** ({loc_tag}): {p['details']}")
-
 # --- PRE-PROCESS ALL DATA ONCE ---
 # 1. Parts Data from Google Sheets
 sheets_dict = load_google_sheet(sheet_url)
@@ -217,7 +210,6 @@ if not jobs_filtered.empty:
                 tech_metrics[t]["Jobs"] += 1
 
 if ts_df is not None and not ts_df.empty:
-    # Group by Tech and Week to calculate Weekly Overtime (>40 hrs/wk)
     weekly_hrs = ts_df.groupby(['Tech Clean', 'Week'])['Hours'].sum().reset_index()
     
     for t in VALID_TECHS:
@@ -236,9 +228,8 @@ if ts_df is not None and not ts_df.empty:
         tech_metrics[t]["OTHours"] = tot_ot
 
 # --- TABS ---
-tab_exec, tab_pay, tab_parts, tab_jobs, tab_inv, tab_ts, tab_test = st.tabs([
+tab_exec, tab_parts, tab_jobs, tab_inv, tab_ts, tab_test = st.tabs([
     "📈 Executive Summary Table",
-    "💵 Payroll Analysis",
     "⚙️ Parts Usage",
     "📋 Jobs Analysis",
     "💳 Invoices Analysis",
@@ -268,8 +259,6 @@ with tab_exec:
             
         exec_rows.append({
             "Technician": t,
-            "Location": p_info["location"],
-            "Pay Model": p_info["details"],
             "Jobs Completed": m["Jobs"],
             "Reg Hours": m["RegHours"],
             "OT Hours": m["OTHours"],
@@ -290,58 +279,7 @@ with tab_exec:
 
     st.dataframe(display_master, use_container_width=True, hide_index=True)
 
-# --- TAB 2: PAYROLL ANALYSIS ---
-with tab_pay:
-    st.header("Payroll & Compensation Breakdown")
-    st.markdown("Detailed breakdown of how pay is calculated for each technician, including weekly overtime (1.5x after 40 hrs/wk) for hourly techs.")
-    
-    pay_rows = []
-    for t in sorted(VALID_TECHS):
-        m = tech_metrics[t]
-        p_info = PAY_STRUCTURE[t]
-        p_type = p_info["type"]
-        
-        if p_type == "Hourly":
-            rate = p_info["rate"]
-            pay = (m["RegHours"] * rate) + (m["OTHours"] * rate * 1.5)
-            if m["OTHours"] > 0:
-                calc_note = f"Reg: {m['RegHours']:.2f} hrs × ${rate:.2f} | OT: {m['OTHours']:.2f} hrs × ${rate*1.5:.2f}"
-            else:
-                calc_note = f"{m['RegHours']:.2f} hrs × ${rate:.2f}/hr (0 OT hrs)"
-        elif p_type == "Commission":
-            pay = m["Revenue"] * p_info["rate"]
-            calc_note = f"{p_info['rate']*100:.0f}% of ${m['Revenue']:,.2f} revenue"
-        elif p_type == "Salary":
-            pay = p_info["annual"] / 12.0
-            calc_note = f"Monthly Salary (${p_info['annual']:,.0f}/12)"
-            
-        labor_pct = (pay / m["Revenue"] * 100) if m["Revenue"] > 0 else 0.0
-
-        pay_rows.append({
-            "Technician": t,
-            "Pay Type": p_type,
-            "Compensation Terms": p_info["details"],
-            "Calculation Detail": calc_note,
-            "Reg Hours": m["RegHours"],
-            "OT Hours": m["OTHours"],
-            "Total Hours": m["Hours"],
-            "Attributed Revenue": m["Revenue"],
-            "Gross Pay": pay,
-            "Labor % of Revenue": labor_pct
-        })
-
-    pay_df = pd.DataFrame(pay_rows)
-    display_pay = pay_df.copy()
-    display_pay["Reg Hours"] = display_pay["Reg Hours"].map('{:,.2f} hrs'.format)
-    display_pay["OT Hours"] = display_pay["OT Hours"].map('{:,.2f} hrs'.format)
-    display_pay["Total Hours"] = display_pay["Total Hours"].map('{:,.2f} hrs'.format)
-    display_pay["Attributed Revenue"] = display_pay["Attributed Revenue"].map('${:,.2f}'.format)
-    display_pay["Gross Pay"] = display_pay["Gross Pay"].map('${:,.2f}'.format)
-    display_pay["Labor % of Revenue"] = display_pay["Labor % of Revenue"].map('{:.1f}%'.format)
-
-    st.dataframe(display_pay, use_container_width=True, hide_index=True)
-
-# --- TAB 3: PARTS USAGE ---
+# --- TAB 2: PARTS USAGE ---
 with tab_parts:
     st.header("Parts Usage Analysis (Net Usage)")
     st.caption("Filtered exclusively for active technicians. Items marked as 'Return' are subtracted.")
@@ -369,7 +307,7 @@ with tab_parts:
     else:
         st.info("Google Sheet parts data not loaded.")
 
-# --- TAB 4: JOBS ANALYSIS ---
+# --- TAB 3: JOBS ANALYSIS ---
 with tab_jobs:
     st.header("Jobs Analysis")
     if not jobs_filtered.empty:
@@ -393,7 +331,7 @@ with tab_jobs:
     else:
         st.info("Upload 'all jobs.csv' in the sidebar.")
 
-# --- TAB 5: INVOICES ANALYSIS ---
+# --- TAB 4: INVOICES ANALYSIS ---
 with tab_inv:
     st.header("Invoices Analysis")
     st.caption("Filtered exclusively for active technicians (Draft & Void invoices excluded).")
@@ -432,7 +370,7 @@ with tab_inv:
     else:
         st.info("Upload 'invoices.csv' in the sidebar.")
 
-# --- TAB 6: TIMESHEETS ANALYSIS ---
+# --- TAB 5: TIMESHEETS ANALYSIS ---
 with tab_ts:
     st.header("Technician Timesheets Analysis")
     if ts_df is not None and not ts_df.empty and 'Tech Clean' in ts_df.columns:
@@ -458,14 +396,10 @@ with tab_ts:
         disp_ts_sum["Overtime % of Total"] = disp_ts_sum["Overtime % of Total"].map('{:.1f}%'.format)
         
         st.dataframe(disp_ts_sum, use_container_width=True, hide_index=True)
-
-        st.subheader("Detailed Shift Logs")
-        show_cols = [c for c in ['Tech Clean', 'User', 'Clock In Date/Time', 'Clock Out Date/Time', 'Hours', 'Clock In Notes', 'Clock Out Notes'] if c in ts_df.columns]
-        st.dataframe(ts_df[show_cols], use_container_width=True, hide_index=True)
     else:
         st.info("Upload 'timesheets.csv' in the sidebar.")
 
-# --- TAB 7: TEST SECTION - BU LEVEL EFFICIENCY ---
+# --- TAB 6: TEST SECTION - BU LEVEL EFFICIENCY ---
 with tab_test:
     st.header("🧪 Test Section: BU-Level Replenishment Efficiency & Material Ratios")
     st.markdown("""
