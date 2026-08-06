@@ -754,14 +754,10 @@ with tab_test:
                     tech_jobs = tech_metrics[tech_name]['Jobs']
 
                 tech_parts_total = p_tech['Total Value'].sum()
+                mat_pct = (tech_parts_total / tech_rev * 100) if tech_rev > 0 else 0.0
 
-                mc1, mc2 = st.columns(2)
-                mc1.metric("Jobs Completed", tech_jobs)
-                mc2.metric("Attributed Revenue", f"${tech_rev:,.2f}")
-
-                mc3, mc4 = st.columns(2)
-                mc3.metric("Net Parts Cost", f"${tech_parts_total:,.2f}")
-                mc4.metric("Material % of Rev", f"{(tech_parts_total / tech_rev * 100) if tech_rev > 0 else 0:.2f}%")
+                # Compact single-line summary banner to avoid metric overflow
+                st.caption(f"**Jobs:** {tech_jobs} | **Revenue:** ${tech_rev:,.2f} | **Parts:** ${tech_parts_total:,.2f} | **Mat %:** {mat_pct:.2f}%")
 
                 if not p_tech.empty:
                     tech_item_summary = p_tech.groupby(['SKU', 'Item']).agg(
@@ -769,14 +765,26 @@ with tab_test:
                         Total_Cost=('Total Value', 'sum')
                     ).reset_index().sort_values(by='Total_Cost', ascending=False)
 
+                    # Combine Item and SKU into a single compact column
+                    tech_item_summary['Item (SKU)'] = tech_item_summary['Item'] + " (#" + tech_item_summary['SKU'].astype(str) + ")"
                     tech_item_summary['Cost % Rev'] = (
                         (tech_item_summary['Total_Cost'] / tech_rev * 100).map('{:.2f}%'.format)
                         if tech_rev > 0 else "0.00%"
                     )
-                    tech_item_summary['Total Cost'] = tech_item_summary['Total_Cost'].map('${:,.2f}'.format)
+                    tech_item_summary['Cost'] = tech_item_summary['Total_Cost'].map('${:,.2f}'.format)
                     tech_item_summary.rename(columns={'Qty_Used': 'Qty'}, inplace=True)
 
-                    st.dataframe(tech_item_summary[['SKU', 'Item', 'Qty', 'Total Cost', 'Cost % Rev']], use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        tech_item_summary[['Item (SKU)', 'Qty', 'Cost', 'Cost % Rev']], 
+                        use_container_width=True, 
+                        hide_index=True,
+                        column_config={
+                            "Item (SKU)": st.column_config.TextColumn("Item Description", width="medium"),
+                            "Qty": st.column_config.NumberColumn("Qty", width="small"),
+                            "Cost": st.column_config.TextColumn("Cost", width="small"),
+                            "Cost % Rev": st.column_config.TextColumn("% Rev", width="small")
+                        }
+                    )
                 else:
                     st.info(f"No parts usage logged for {tech_name} under {bu_filter_label}.")
             else:
