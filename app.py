@@ -172,11 +172,13 @@ def extract_job_duration_hours(df):
 def parse_job_fixtures(title_str, summary_str=""):
     """
     Parses fixture quantities and identifies primary item type from job titles and subtitles.
-    Handles fraction ratios (e.g. '1/1' with Faucet and Toilet -> 1 Faucet, 1 Toilet)
-    and compound names (e.g. 'Sink/faucet' -> 1 Sink, 1 Faucet).
+    Accounts for standalone numbers in subtitles (e.g., Title: 'Toilet', Subtitle: '2' -> 2 Toilets),
+    fraction ratios (e.g. '1/1' with Faucet and Toilet -> 1 Faucet, 1 Toilet), and explicit quantities.
     """
-    text = (str(title_str) + " " + str(summary_str)).lower()
-    text_clean = re.sub(r':\s*lowes.*', '', text)
+    title_text = str(title_str).lower() if pd.notna(title_str) else ""
+    summary_text = str(summary_str).strip().lower() if pd.notna(summary_str) else ""
+    combined_text = (title_text + " " + summary_text).strip()
+    text_clean = re.sub(r':\s*lowes.*', '', combined_text)
     
     fixture_keywords = [
         ('Toilet', ['toilet', 'commode']),
@@ -196,18 +198,32 @@ def parse_job_fixtures(title_str, summary_str=""):
                 break
 
     counts = {}
-    fraction_match = re.search(r'\b(\d+)\s*/\s*(\d+)\b', text)
-    if fraction_match and len(found_fixtures) == 2:
+    fraction_match = re.search(r'\b(\d+)\s*/\s*(\d+)\b', combined_text)
+    summary_is_num = re.match(r'^\d+$', summary_text)
+    
+    # Standalone number in subtitle for a single matched fixture type
+    if summary_is_num and len(found_fixtures) == 1:
+        counts[found_fixtures[0]] = int(summary_text)
+    elif fraction_match and len(found_fixtures) == 2:
         x, y = int(fraction_match.group(1)), int(fraction_match.group(2))
         counts[found_fixtures[0]] = x
         counts[found_fixtures[1]] = y
     else:
         for std_name, aliases in fixture_keywords:
-            pattern = r'\b(\d+)\s*(?:' + '|'.join(aliases) + r')\b'
-            num_match = re.search(pattern, text_clean)
+            if std_name not in found_fixtures:
+                continue
+            alias_pattern = '|'.join(aliases)
+            num_match = re.search(r'\b(\d+)\s*(?:' + alias_pattern + r')\b', text_clean)
+            num_match_after = re.search(r'\b(?:' + alias_pattern + r')\s*(\d+)\b', text_clean)
+            
             if num_match:
                 counts[std_name] = int(num_match.group(1))
-            elif std_name in found_fixtures:
+            elif num_match_after:
+                counts[std_name] = int(num_match_after.group(1))
+            elif len(found_fixtures) == 1 and re.search(r'\b(\d+)\b', summary_text):
+                num_in_summary = re.search(r'\b(\d+)\b', summary_text)
+                counts[std_name] = int(num_in_summary.group(1))
+            else:
                 counts[std_name] = 1
 
     item_type_label = " / ".join(found_fixtures) if found_fixtures else "Other / Unspecified"
