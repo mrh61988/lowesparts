@@ -193,6 +193,13 @@ uploaded_timesheets = st.sidebar.file_uploader("Upload 'timesheets.csv'", type=[
 
 TARGET_BUS = ['Lowes - Simple Installs', 'Lowes - Water Heaters']
 
+# Display active tech roster in sidebar without showing pay rates
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 👷 Tech Roster")
+for t, p in PAY_STRUCTURE.items():
+    loc_tag = "🌵 Tucson" if p["location"] == "Tucson" else "📍 Phoenix"
+    st.sidebar.markdown(f"**{t}** ({loc_tag})")
+
 # --- PRE-PROCESS ALL DATA ONCE ---
 # 1. Parts Data from Google Sheets
 sheets_dict = fetch_live_google_sheet(sheet_url)
@@ -476,7 +483,15 @@ with tab_minmax:
                     item_val = row.get('Item', '')
                     desc = (str(item_name_val) + " " + str(item_val)).lower()
                     
-                    if 'ao smith' in desc or 'a.o. smith' in desc or 'gal' in desc:
+                    # Precise Unit heuristic: Must match full water heater unit descriptions (e.g. AO Smith, 40 Gal Gas, 50 Gal Electric)
+                    # and must NOT be an expansion tank or galvanized fitting
+                    is_unit = (
+                        'ao smith' in desc or 
+                        'a.o. smith' in desc or 
+                        re.search(r'\b\d+\s*gal\s*(gas|electric|elec)\b', desc)
+                    ) and not ('expansion tank' in desc or 'galv' in desc)
+
+                    if is_unit:
                         return 'Lowes - Water Heaters (Units)'
                     else:
                         return 'Lowes - Water Heaters (Parts)'
