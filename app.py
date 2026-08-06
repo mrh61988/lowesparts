@@ -721,12 +721,16 @@ with tab_test:
     """)
 
     st.markdown("---")
-    # --- TEST TABLE 1: Interactive Tech Item-Level Drilldown ---
-    st.subheader("1. Interactive Technician Item Usage & Revenue Drilldown")
+    # --- TEST TABLE 1: Interactive Tech Item-Level Drilldown (Excludes AO Smith Water Heaters) ---
+    st.subheader("1. Interactive Technician Item Usage & Revenue Drilldown (Excludes AO Smith Water Heaters)")
     selected_tech = st.selectbox("Select Technician to Inspect:", sorted(VALID_TECHS))
 
     if not df_parts.empty:
-        p_tech = df_parts[df_parts['Tech'] == selected_tech]
+        # Filter out AO Smith water heater units for this section
+        is_ao_smith = df_parts['Item'].astype(str).str.lower().str.contains(r'a\.?o\.?\s*smith', regex=True, na=False)
+        df_parts_no_aosmith = df_parts[~is_ao_smith]
+
+        p_tech = df_parts_no_aosmith[df_parts_no_aosmith['Tech'] == selected_tech]
         tech_rev = tech_metrics[selected_tech]['Revenue']
         tech_jobs = tech_metrics[selected_tech]['Jobs']
         tech_parts_total = p_tech['Total Value'].sum()
@@ -734,7 +738,7 @@ with tab_test:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Jobs Completed", tech_jobs)
         c2.metric("Attributed Revenue", f"${tech_rev:,.2f}")
-        c3.metric("Net Parts Cost", f"${tech_parts_total:,.2f}")
+        c3.metric("Net Parts Cost (Excl. AO Smith)", f"${tech_parts_total:,.2f}")
         c4.metric("Material % of Revenue", f"{(tech_parts_total / tech_rev * 100) if tech_rev > 0 else 0:.2f}%")
 
         if not p_tech.empty:
@@ -752,7 +756,7 @@ with tab_test:
 
             st.dataframe(tech_item_summary, use_container_width=True, hide_index=True)
         else:
-            st.info(f"No parts usage logged for {selected_tech}.")
+            st.info(f"No non-AO Smith parts usage logged for {selected_tech}.")
     else:
         st.info("Parts usage data not loaded.")
 
