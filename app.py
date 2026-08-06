@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import re
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="NexSys Operations & Payroll Analyzer", layout="wide")
 st.title("NexSys Operations & Financial Analyzer")
-st.markdown("Detailed tabular analysis across Parts Usage, Jobs, Invoices, Timesheets, and **Replenishment Efficiency** for **Simple Installs** and **Water Heaters**.")
+st.markdown("Detailed tabular analysis across Parts Usage, Jobs, Invoices, Timesheets, Warehouse Inventory Targets, and **Replenishment Efficiency** for **Simple Installs** and **Water Heaters**.")
 
 # --- VALID TECHNICIANS LIST & PAY STRUCTURE ---
 PAY_STRUCTURE = {
@@ -135,7 +136,7 @@ if sheets_dict:
     df_wh_p = process_parts_df(sheets_dict[wh_sheet], 'Lowes - Water Heaters') if wh_sheet else pd.DataFrame()
     df_parts = pd.concat([df_simple_p, df_wh_p], ignore_index=True)
 
-# 2. Jobs Data (Attributing full credit to the first listed tech)
+# 2. Jobs Data
 raw_jobs_df = read_uploaded_csv(uploaded_jobs)
 jobs_filtered = pd.DataFrame()
 if raw_jobs_df is not None and 'Business Unit' in raw_jobs_df.columns:
@@ -218,9 +219,10 @@ if ts_df is not None and not ts_df.empty:
         tech_metrics[t]["OTHours"] = tot_ot
 
 # --- TABS ---
-tab_exec, tab_parts, tab_jobs, tab_inv, tab_ts, tab_test = st.tabs([
+tab_exec, tab_parts, tab_minmax, tab_jobs, tab_inv, tab_ts, tab_test = st.tabs([
     "📈 Executive Summary Table",
     "⚙️ Parts Usage",
+    "📦 Warehouse Min/Max Targets",
     "📋 Jobs Analysis",
     "💳 Invoices Analysis",
     "⏱️ Timesheets Analysis",
@@ -297,7 +299,63 @@ with tab_parts:
     else:
         st.info("Google Sheet parts data not loaded.")
 
-# --- TAB 3: JOBS ANALYSIS ---
+# --- TAB 3: WAREHOUSE MIN/MAX TARGETS ---
+with tab_minmax:
+    st.header("📦 Warehouse Min/Max Inventory Recommendations")
+    st.markdown("""
+    Targeting **1.5 weeks of shelf stock** based on historical replenishment consumption (July 2026 / 4.43 weeks).
+    - **Suggested Min (Reorder Point / 1.0 Wk):** Level that triggers supplier order.
+    - **Target Stock (Ideal Shelf Level / 1.5 Wks):** Ideal quantity on hand.
+    - **Suggested Max (Order Up To / 2.0 Wks):** Ceiling for shelf stock.
+    """)
+    
+    if not df_parts.empty:
+        total_weeks = 31.0 / 7.0
+        
+        item_usage = df_parts.groupby(['Business Unit', 'SKU', 'Item']).agg(
+            Total_Net_Qty=('Qty', 'sum'),
+            Total_Net_Cost=('Total Value', 'sum')
+        ).reset_index()
+        
+        item_usage['Weekly_Avg_Qty'] = item_usage['Total_Net_Qty'] / total_weeks
+        item_usage['Min_Stock_Qty'] = np.ceil(item_usage['Weekly_Avg_Qty'] * 1.0).clip(lower=1)
+        item_usage['Target_Stock_Qty'] = np.ceil(item_usage['Weekly_Avg_Qty'] * 1.5)
+        item_usage['Max_Stock_Qty'] = np.maximum(np.ceil(item_usage['Weekly_Avg_Qty'] * 2.0), item_usage['Min_Stock_Qty'] + 1)
+        
+        def render_minmax_table(bu_name):
+            bu_df = item_usage[item_usage['Business Unit'] == bu_name].copy()
+            if not bu_df.empty:
+                bu_df.sort_values(by='Target_Stock_Qty', ascending=False, inplace=True)
+                bu_df.rename(columns={
+                    'SKU': 'SKU',
+                    'Item': 'Item Description',
+                    'Total_Net_Qty': 'July Net Usage Qty',
+                    'Weekly_Avg_Qty': 'Weekly Avg Demand',
+                    'Min_Stock_Qty': 'Suggested Min (1.0 Wk)',
+                    'Target_Stock_Qty': 'Target Stock (1.5 Wks)',
+                    'Max_Stock_Qty': 'Suggested Max (2.0 Wks)'
+                }, inplace=True)
+                
+                bu_df['Weekly Avg Demand'] = bu_df['Weekly Avg Demand'].map('{:.2f}'.format)
+                bu_df['July Net Usage Qty'] = bu_df['July Net Usage Qty'].astype(int)
+                bu_df['Suggested Min (1.0 Wk)'] = bu_df['Suggested Min (1.0 Wk)'].astype(int)
+                bu_df['Target Stock (1.5 Wks)'] = bu_df['Target Stock (1.5 Wks)'].astype(int)
+                bu_df['Suggested Max (2.0 Wks)'] = bu_df['Suggested Max (2.0 Wks)'].astype(int)
+                
+                show_cols = ['SKU', 'Item Description', 'July Net Usage Qty', 'Weekly Avg Demand', 'Suggested Min (1.0 Wk)', 'Target Stock (1.5 Wks)', 'Suggested Max (2.0 Wks)']
+                st.dataframe(bu_df[show_cols], use_container_width=True, hide_index=True)
+            else:
+                st.info(f"No parts usage data available for {bu_name}.")
+
+        st.subheader("1. Lowes - Simple Installs Inventory Targets")
+        render_minmax_table('Lowes - Simple Installs')
+        
+        st.subheader("2. Lowes - Water Heaters Inventory Targets")
+        render_minmax_table('Lowes - Water Heaters')
+    else:
+        st.info("Google Sheet parts data not loaded.")
+
+# --- TAB 4: JOBS ANALYSIS ---
 with tab_jobs:
     st.header("Jobs Analysis")
     if not jobs_filtered.empty:
@@ -321,7 +379,7 @@ with tab_jobs:
     else:
         st.info("Upload 'all jobs.csv' in the sidebar.")
 
-# --- TAB 4: INVOICES ANALYSIS ---
+# --- TAB 5: INVOICES ANALYSIS ---
 with tab_inv:
     st.header("Invoices Analysis")
     st.caption("Filtered exclusively for active technicians (Draft & Void invoices excluded). Full credit attributed to the first listed tech.")
@@ -360,7 +418,7 @@ with tab_inv:
     else:
         st.info("Upload 'invoices.csv' in the sidebar.")
 
-# --- TAB 5: TIMESHEETS ANALYSIS ---
+# --- TAB 6: TIMESHEETS ANALYSIS ---
 with tab_ts:
     st.header("Technician Timesheets Analysis")
     if ts_df is not None and not ts_df.empty and 'Tech Clean' in ts_df.columns:
@@ -389,7 +447,7 @@ with tab_ts:
     else:
         st.info("Upload 'timesheets.csv' in the sidebar.")
 
-# --- TAB 6: TEST SECTION - BU LEVEL EFFICIENCY ---
+# --- TAB 7: TEST SECTION - BU LEVEL EFFICIENCY ---
 with tab_test:
     st.header("🧪 Test Section: BU-Level Replenishment Efficiency & Material Ratios")
     st.markdown("""
