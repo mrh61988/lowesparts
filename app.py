@@ -734,7 +734,7 @@ with tab_test:
         )
 
     if not df_parts.empty:
-        # Exclude AO Smith water heater units
+        # Filter out AO Smith water heater units
         is_ao_smith = df_parts['Item'].astype(str).str.lower().str.contains(r'a\.?o\.?\s*smith', regex=True, na=False)
         df_parts_clean = df_parts[~is_ao_smith].copy()
 
@@ -800,12 +800,15 @@ with tab_test:
         st.info("Parts usage data not loaded.")
 
     st.markdown("---")
-    # --- TEST TABLE 2: Top Consumed Items per Technician Summary ---
-    st.subheader("2. Top 3 Consumed Items per Technician (by Value)")
+    # --- TEST TABLE 2: Top Consumed Items per Technician Summary (Excludes AO Smith Water Heaters) ---
+    st.subheader("2. Top 3 Consumed Items per Technician (by Value, Excl. AO Smith)")
     if not df_parts.empty:
+        is_ao_smith = df_parts['Item'].astype(str).str.lower().str.contains(r'a\.?o\.?\s*smith', regex=True, na=False)
+        df_parts_clean = df_parts[~is_ao_smith]
+
         top_skus_list = []
         for t in sorted(VALID_TECHS):
-            p_sub = df_parts[df_parts['Tech'] == t]
+            p_sub = df_parts_clean[df_parts_clean['Tech'] == t]
             if not p_sub.empty:
                 top_items = (
                     p_sub.groupby('Item')['Total Value']
@@ -819,31 +822,34 @@ with tab_test:
                 top_str = "None"
 
             t_rev = tech_metrics[t]['Revenue']
-            t_cost = tech_metrics[t]['PartsCost']
+            t_cost = p_sub['Total Value'].sum()
             t_jobs = tech_metrics[t]['Jobs']
 
             top_skus_list.append({
                 "Technician": t,
                 "Jobs Completed": t_jobs,
                 "Attributed Revenue": t_rev,
-                "Total Parts Cost": t_cost,
+                "Parts Cost (Excl. AO Smith)": t_cost,
                 "Material % of Rev": (t_cost / t_rev * 100) if t_rev > 0 else 0.0,
                 "Top 3 Consumed Items": top_str
             })
 
         df_top_summary = pd.DataFrame(top_skus_list)
         df_top_summary["Attributed Revenue"] = df_top_summary["Attributed Revenue"].map('${:,.2f}'.format)
-        df_top_summary["Total Parts Cost"] = df_top_summary["Total Parts Cost"].map('${:,.2f}'.format)
+        df_top_summary["Parts Cost (Excl. AO Smith)"] = df_top_summary["Parts Cost (Excl. AO Smith)"].map('${:,.2f}'.format)
         df_top_summary["Material % of Rev"] = df_top_summary["Material % of Rev"].map('{:.2f}%'.format)
 
         st.dataframe(df_top_summary, use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    # --- TEST TABLE 3: SKU Benchmarking Across Technicians ---
-    st.subheader("3. SKU Usage Benchmarking Matrix Across Technicians")
+    # --- TEST TABLE 3: SKU Benchmarking Across Technicians (Excludes AO Smith Water Heaters) ---
+    st.subheader("3. SKU Usage Benchmarking Matrix Across Technicians (Excl. AO Smith)")
     if not df_parts.empty:
+        is_ao_smith = df_parts['Item'].astype(str).str.lower().str.contains(r'a\.?o\.?\s*smith', regex=True, na=False)
+        df_parts_clean = df_parts[~is_ao_smith]
+
         sku_pivot = pd.pivot_table(
-            df_parts,
+            df_parts_clean,
             index=['SKU', 'Item'],
             columns='Tech',
             values='Qty',
@@ -851,7 +857,7 @@ with tab_test:
             fill_value=0
         ).reset_index()
 
-        cost_map = df_parts.groupby('SKU')['Total Value'].sum().to_dict()
+        cost_map = df_parts_clean.groupby('SKU')['Total Value'].sum().to_dict()
         sku_pivot['Total Units Used'] = sku_pivot.iloc[:, 2:].sum(axis=1)
         sku_pivot['Total Value ($)'] = sku_pivot['SKU'].map(cost_map).fillna(0)
         sku_pivot.sort_values(by='Total Value ($)', ascending=False, inplace=True)
