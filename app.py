@@ -714,10 +714,10 @@ with tab_test:
     This section explicitly separates **Simple Installs** and **Water Heaters** to evaluate technician replenishment 
     intensity against expected business unit ratios. Full job and revenue credit is attributed to the first listed technician.
     
-    *Note: In Section 2, only **Water Heater Parts** usage is counted towards Net Replenishment Cost so actual water heater unit tanks do not distort material ratios. Mathew Hodges is based in Tucson and does not pull from the main warehouse.*
+    *Note: In Section 2, only **Water Heater Parts** usage is counted towards Net Replenishment Cost so actual water heater unit tanks do not distort material ratios. Expected ratio range: **3.5% – 6.0%**. Mathew Hodges is based in Tucson and does not pull from the main warehouse.*
     """)
 
-    def get_bu_efficiency_table(bu_name, max_material_ratio_threshold):
+    def get_bu_efficiency_table(bu_name, min_material_ratio_threshold, max_material_ratio_threshold):
         bu_rows = []
         for t in sorted(VALID_TECHS):
             if not df_parts.empty:
@@ -755,9 +755,9 @@ with tab_test:
             elif j_count > 0 and parts_cost == 0:
                 flag = "⚠️ Zero Parts Restocked"
             elif mat_pct > max_material_ratio_threshold:
-                flag = f"🔴 High Material % (>{max_material_ratio_threshold:.0f}%)"
-            elif mat_pct > 0 and mat_pct < 1.0 and j_count > 5:
-                flag = "🟡 Low Material % (Unreported Transfers?)"
+                flag = f"🔴 High Material % (>{max_material_ratio_threshold:.1f}%)"
+            elif mat_pct > 0 and mat_pct < min_material_ratio_threshold and j_count > 5:
+                flag = f"🟡 Low Material % (<{min_material_ratio_threshold:.1f}%)"
             elif j_count == 0 and parts_cost == 0:
                 flag = "⚪ No Jobs in BU"
             else:
@@ -782,15 +782,15 @@ with tab_test:
             df_res["Material % of Revenue"] = df_res["Material % of Revenue"].map('{:.2f}%'.format)
         return df_res
 
-    st.subheader("1. Lowes - Simple Installs (Expected Material Ratio: 2.0% – 8.0%)")
-    simple_eff_df = get_bu_efficiency_table('Lowes - Simple Installs', max_material_ratio_threshold=8.0)
+    st.subheader("1. Lowes - Simple Installs (Expected Material Ratio: 1.0% – 3.5%)")
+    simple_eff_df = get_bu_efficiency_table('Lowes - Simple Installs', min_material_ratio_threshold=1.0, max_material_ratio_threshold=3.5)
     if not simple_eff_df.empty:
         st.dataframe(simple_eff_df, use_container_width=True, hide_index=True)
     else:
         st.info("No data available for Simple Installs.")
 
-    st.subheader("2. Lowes - Water Heaters (Expected Material Ratio: 2.5% – 12.0%)")
-    wh_eff_df = get_bu_efficiency_table('Lowes - Water Heaters', max_material_ratio_threshold=12.0)
+    st.subheader("2. Lowes - Water Heaters (Expected Material Ratio: 3.5% – 6.0%)")
+    wh_eff_df = get_bu_efficiency_table('Lowes - Water Heaters', min_material_ratio_threshold=3.5, max_material_ratio_threshold=6.0)
     if not wh_eff_df.empty:
         st.dataframe(wh_eff_df, use_container_width=True, hide_index=True)
     else:
