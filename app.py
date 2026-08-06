@@ -756,7 +756,7 @@ with tab_test:
                 tech_parts_total = p_tech['Total Value'].sum()
                 mat_pct = (tech_parts_total / tech_rev * 100) if tech_rev > 0 else 0.0
 
-                # Compact single-line summary banner to avoid metric overflow
+                # Compact single-line summary banner
                 st.caption(f"**Jobs:** {tech_jobs} | **Revenue:** ${tech_rev:,.2f} | **Parts:** ${tech_parts_total:,.2f} | **Mat %:** {mat_pct:.2f}%")
 
                 if not p_tech.empty:
@@ -765,8 +765,6 @@ with tab_test:
                         Total_Cost=('Total Value', 'sum')
                     ).reset_index().sort_values(by='Total_Cost', ascending=False)
 
-                    # Combine Item and SKU into a single compact column
-                    tech_item_summary['Item (SKU)'] = tech_item_summary['Item'] + " (#" + tech_item_summary['SKU'].astype(str) + ")"
                     tech_item_summary['Cost % Rev'] = (
                         (tech_item_summary['Total_Cost'] / tech_rev * 100).map('{:.2f}%'.format)
                         if tech_rev > 0 else "0.00%"
@@ -775,11 +773,12 @@ with tab_test:
                     tech_item_summary.rename(columns={'Qty_Used': 'Qty'}, inplace=True)
 
                     st.dataframe(
-                        tech_item_summary[['Item (SKU)', 'Qty', 'Cost', 'Cost % Rev']], 
+                        tech_item_summary[['SKU', 'Item', 'Qty', 'Cost', 'Cost % Rev']], 
                         use_container_width=True, 
                         hide_index=True,
                         column_config={
-                            "Item (SKU)": st.column_config.TextColumn("Item Description", width="medium"),
+                            "SKU": st.column_config.TextColumn("SKU", width="small"),
+                            "Item": st.column_config.TextColumn("Item Description", width="medium"),
                             "Qty": st.column_config.NumberColumn("Qty", width="small"),
                             "Cost": st.column_config.TextColumn("Cost", width="small"),
                             "Cost % Rev": st.column_config.TextColumn("% Rev", width="small")
