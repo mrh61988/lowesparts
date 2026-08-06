@@ -26,7 +26,7 @@ div[data-testid="stDataFrame"] {
 """, unsafe_allow_html=True)
 
 st.title("NexSys Operations & Financial Analyzer")
-st.markdown("Detailed tabular analysis across Parts Usage, Jobs, Invoices, Timesheets, Warehouse Inventory Targets, and **Replenishment Efficiency** for **Simple Installs** and **Water Heaters**.")
+st.markdown("Detailed tabular analysis across Parts Usage, Jobs, Invoices, Timesheets, and **Warehouse Replenishment Targets** for **Simple Installs** and **Water Heaters**.")
 
 # --- VALID TECHNICIANS LIST & PAY STRUCTURE ---
 PAY_STRUCTURE = {
@@ -44,10 +44,10 @@ VALID_TECHS = list(PAY_STRUCTURE.keys())
 
 # --- HELPER FUNCTIONS ---
 def find_col(df, keyword_lists):
-    """Fuzzy column matcher handling hidden line breaks, newlines, and alternate names."""
+    """Fuzzy column matcher handling hidden line breaks, newlines, and alternate names in Google Sheets."""
     for keywords in keyword_lists:
         for c in df.columns:
-            c_clean = str(c).lower().replace('\n', ' ')
+            c_clean = str(c).lower().replace('\n', ' ').strip()
             if all(k.lower() in c_clean for k in keywords):
                 return c
     return None
@@ -89,7 +89,7 @@ def get_first_valid_tech(tech_str):
     return None
 
 def parse_min_max(val):
-    """Parses warehouse min/max formats (e.g. '70 / 140', '4-8', '4 8')."""
+    """Parses warehouse min/max formatted string like '70 / 140' or '4 / 8'."""
     val_str = str(val).strip()
     if '/' in val_str:
         parts = [p.strip() for p in val_str.split('/')]
@@ -100,13 +100,11 @@ def parse_min_max(val):
         except:
             pass
             
-    # Fallback regex search for any two numbers in the string
     nums = re.findall(r'\d+', val_str)
     if len(nums) >= 2:
         return int(nums[0]), int(nums[1])
     elif len(nums) == 1:
         return int(nums[0]), 0
-        
     return 0, 0
 
 def map_dept_to_bu(dept):
@@ -118,8 +116,9 @@ def map_dept_to_bu(dept):
         return 'Lowes - Water Heaters'
     return 'Other'
 
-@st.cache_data
-def load_google_sheet(url):
+# Cache expires every 15 seconds to ensure fresh Google Sheet tabs are pulled!
+@st.cache_data(ttl=15)
+def fetch_live_google_sheet(url):
     """Reads a public Google Sheet URL into a dictionary of DataFrames."""
     if not url:
         return None
@@ -129,7 +128,7 @@ def load_google_sheet(url):
         xls = pd.read_excel(export_url, sheet_name=None)
         return xls
     except Exception as e:
-        st.error(f"Error reading Google Sheet. Ensure link permissions are public ('Anyone with the link can view'). Details: {e}")
+        st.error(f"Error reading Google Sheet. Ensure link permissions are public. Details: {e}")
         return None
 
 def process_parts_df(df, business_unit):
@@ -194,9 +193,16 @@ uploaded_timesheets = st.sidebar.file_uploader("Upload 'timesheets.csv'", type=[
 
 TARGET_BUS = ['Lowes - Simple Installs', 'Lowes - Water Heaters']
 
+# Display active tech roster in sidebar without showing pay rates
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 👷 Tech Roster")
+for t, p in PAY_STRUCTURE.items():
+    loc_tag = "🌵 Tucson" if p["location"] == "Tucson" else "📍 Phoenix"
+    st.sidebar.markdown(f"**{t}** ({loc_tag})")
+
 # --- PRE-PROCESS ALL DATA ONCE ---
 # 1. Parts Data from Google Sheets
-sheets_dict = load_google_sheet(sheet_url)
+sheets_dict = fetch_live_google_sheet(sheet_url)
 df_parts = pd.DataFrame()
 df_current_minmax = pd.DataFrame()
 
@@ -211,7 +217,7 @@ if sheets_dict:
     df_wh_p = process_parts_df(sheets_dict[wh_sheet], 'Lowes - Water Heaters') if wh_sheet else pd.DataFrame()
     df_parts = pd.concat([df_simple_p, df_wh_p], ignore_index=True)
     
-    # Identify current Min/Max sheet (e.g. "Nexsys Min/Max")
+    # Identify current Min/Max sheet safely
     minmax_sheet = None
     for name in sheet_names:
         if 'min' in name.lower() and 'max' in name.lower():
@@ -221,7 +227,10 @@ if sheets_dict:
     if minmax_sheet and minmax_sheet in sheets_dict:
         raw_minmax = sheets_dict[minmax_sheet].copy()
         
-        # Fuzzy column locator with robust fallbacks
+        # Flatten all columns first to avoid weird hidden newlines
+        raw_minmax.columns = raw_minmax.columns.astype(str).str.replace('\n', ' ').str.strip()
+        
+        # Fuzzy column locator
         c_sku = find_col(raw_minmax, [['sku'], ['item #'], ['part']])
         c_minmax = find_col(raw_minmax, [['warehouse', 'min'], ['min', 'max'], ['min/max']])
         c_qty = find_col(raw_minmax, [['qty'], ['quantity'], ['on hand'], ['stock']])
@@ -244,13 +253,13 @@ if sheets_dict:
                 raw_minmax['Current On Hand'] = 0
                 
             if c_dept:
-                raw_minmax['Business Unit_sheet'] = raw_minmax[c_dept].apply(map_dept_to_bu)
+                raw_minmax['Business Unit'] = raw_minmax[c_dept].apply(map_dept_to_bu)
             else:
-                raw_minmax['Business Unit_sheet'] = 'Unknown'
+                raw_minmax['Business Unit'] = 'Unknown'
                 
             raw_minmax['Item Name'] = raw_minmax[c_item] if c_item else ''
             
-            df_current_minmax = raw_minmax[['SKU_clean', 'Item Name', 'Business Unit_sheet', 'Current On Hand', 'Current Min', 'Current Max']].copy()
+            df_current_minmax = raw_minmax[['SKU_clean', 'Item Name', 'Business Unit', 'Current On Hand', 'Current Min', 'Current Max']].copy()
 
 # 2. Jobs Data
 raw_jobs_df = read_uploaded_csv(uploaded_jobs)
@@ -335,14 +344,13 @@ if ts_df is not None and not ts_df.empty:
         tech_metrics[t]["OTHours"] = tot_ot
 
 # --- TABS ---
-tab_exec, tab_parts, tab_minmax, tab_jobs, tab_inv, tab_ts, tab_test = st.tabs([
-    "📈 Executive Summary Table",
+tab_exec, tab_parts, tab_minmax, tab_jobs, tab_inv, tab_ts = st.tabs([
+    "📈 Executive Summary",
     "⚙️ Parts Usage",
-    "📦 Warehouse Min/Max Comparison",
+    "📦 Warehouse Min/Max Targets",
     "📋 Jobs Analysis",
     "💳 Invoices Analysis",
-    "⏱️ Timesheets Analysis",
-    "🧪 Test Section: BU Efficiency"
+    "⏱️ Timesheets Analysis"
 ])
 
 # --- TAB 1: EXECUTIVE SUMMARY TABLE ---
@@ -419,8 +427,12 @@ with tab_parts:
 with tab_minmax:
     st.header("📦 Warehouse Min/Max Analysis & Comparison")
     st.markdown("""
-    Comparison of **Current Warehouse Min/Max settings** (from `Nexsys Min/Max` sheet) against **Suggested 1.5-Week Inventory Targets** 
+    Comparison of **Current Warehouse Min/Max settings** against **Suggested 1.5-Week Inventory Targets** 
     calculated from historical demand (July 2026 / 4.43 weeks).
+    - **Current Min / Max:** Active warehouse min/max levels in Google Sheets.
+    - **Suggested Min (1.0 Wk):** Reorder point equal to 1 week of demand.
+    - **Target Stock (1.5 Wks):** Recommended shelf stock level.
+    - **Suggested Max (2.0 Wks):** Order-up-to ceiling level.
     """)
     
     if not df_parts.empty:
@@ -438,18 +450,18 @@ with tab_minmax:
         item_usage['Target_Stock_Qty'] = np.ceil(item_usage['Weekly_Avg_Qty'] * 1.5).astype(int)
         item_usage['Max_Stock_Qty'] = np.maximum(np.ceil(item_usage['Weekly_Avg_Qty'] * 2.0), item_usage['Min_Stock_Qty'] + 1).astype(int)
         
-        # Perform outer merge exclusively on SKU_clean to handle Name/Dept mismatches
+        # Perform outer merge exclusively on SKU_clean
         if not df_current_minmax.empty:
             merged_minmax = pd.merge(
-                item_usage,
+                item_usage[['SKU_clean', 'Business Unit', 'Item', 'Total_Net_Qty', 'Weekly_Avg_Qty', 'Min_Stock_Qty', 'Target_Stock_Qty', 'Max_Stock_Qty']],
                 df_current_minmax, 
                 on=['SKU_clean'], 
                 how='outer'
             )
             
             # Resolve Column Combos safely
-            merged_minmax['Business Unit'] = merged_minmax['Business Unit'].fillna(merged_minmax['Business Unit_sheet']).fillna('Unknown')
-            merged_minmax['Item Description'] = merged_minmax['Item'].fillna(merged_minmax['Item Name']).fillna('')
+            merged_minmax['Business Unit'] = merged_minmax['Business Unit_x'].fillna(merged_minmax['Business Unit_y']).fillna('Unknown')
+            merged_minmax['Item Description'] = merged_minmax['Item Name'].fillna(merged_minmax['Item']).fillna('')
             merged_minmax['Total_Net_Qty'] = merged_minmax['Total_Net_Qty'].fillna(0).astype(int)
             merged_minmax['Weekly_Avg_Qty'] = merged_minmax['Weekly_Avg_Qty'].fillna(0.0)
             
@@ -636,80 +648,3 @@ with tab_ts:
         st.dataframe(disp_ts_sum, use_container_width=True, hide_index=True)
     else:
         st.info("Upload 'timesheets.csv' in the sidebar.")
-
-# --- TAB 7: TEST SECTION - BU LEVEL EFFICIENCY ---
-with tab_test:
-    st.header("🧪 Test Section: BU-Level Replenishment Efficiency & Material Ratios")
-    st.markdown("""
-    This section explicitly separates **Simple Installs** and **Water Heaters** to evaluate technician replenishment 
-    intensity against expected business unit ratios. Full job and revenue credit is attributed to the first listed technician.
-    *Note: Mathew Hodges is based in Tucson and does not pull from the main warehouse.*
-    """)
-
-    def get_bu_efficiency_table(bu_name, max_material_ratio_threshold):
-        bu_rows = []
-        for t in sorted(VALID_TECHS):
-            if not df_parts.empty:
-                p_sub = df_parts[(df_parts['Tech'] == t) & (df_parts['Business Unit'] == bu_name)]
-                parts_cost = p_sub['Total Value'].sum()
-            else:
-                parts_cost = 0.0
-
-            j_count = 0
-            if not jobs_filtered.empty:
-                j_sub = jobs_filtered[(jobs_filtered['Business Unit'] == bu_name) & (jobs_filtered['Tech Clean'] == t)]
-                j_count = len(j_sub)
-
-            rev = 0.0
-            if not inv_filtered.empty:
-                i_sub = inv_filtered[(inv_filtered['Business Unit Clean'] == bu_name) & (inv_filtered['Tech Clean'] == t)]
-                rev = i_sub['Invoice Total'].sum()
-
-            cost_per_job = (parts_cost / j_count) if j_count > 0 else 0.0
-            mat_pct = (parts_cost / rev * 100) if rev > 0 else 0.0
-
-            if t == "Mathew Hodges":
-                flag = "🌵 Tucson Tech (No Warehouse Restocks)"
-            elif j_count > 0 and parts_cost == 0:
-                flag = "⚠️ Zero Parts Restocked"
-            elif mat_pct > max_material_ratio_threshold:
-                flag = f"🔴 High Material % (>{max_material_ratio_threshold:.0f}%)"
-            elif mat_pct > 0 and mat_pct < 1.0 and j_count > 5:
-                flag = "🟡 Low Material % (Unreported Transfers?)"
-            elif j_count == 0 and parts_cost == 0:
-                flag = "⚪ No Jobs in BU"
-            else:
-                flag = "🟢 Normal Range"
-
-            if j_count > 0 or parts_cost > 0:
-                bu_rows.append({
-                    "Technician": t,
-                    "Jobs Completed": j_count,
-                    "Attributed Revenue": rev,
-                    "Net Replenishment Cost": parts_cost,
-                    "Replenishment / Job": cost_per_job,
-                    "Material % of Revenue": mat_pct,
-                    "Operational Flag": flag
-                })
-
-        df_res = pd.DataFrame(bu_rows)
-        if not df_res.empty:
-            df_res["Attributed Revenue"] = df_res["Attributed Revenue"].map('${:,.2f}'.format)
-            df_res["Net Replenishment Cost"] = df_res["Net Replenishment Cost"].map('${:,.2f}'.format)
-            df_res["Replenishment / Job"] = df_res["Replenishment / Job"].map('${:,.2f}'.format)
-            df_res["Material % of Revenue"] = df_res["Material % of Revenue"].map('{:.2f}%'.format)
-        return df_res
-
-    st.subheader("1. Lowes - Simple Installs (Expected Material Ratio: 2.0% – 8.0%)")
-    simple_eff_df = get_bu_efficiency_table('Lowes - Simple Installs', max_material_ratio_threshold=8.0)
-    if not simple_eff_df.empty:
-        st.dataframe(simple_eff_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("No data available for Simple Installs.")
-
-    st.subheader("2. Lowes - Water Heaters (Expected Material Ratio: 2.5% – 12.0%)")
-    wh_eff_df = get_bu_efficiency_table('Lowes - Water Heaters', max_material_ratio_threshold=12.0)
-    if not wh_eff_df.empty:
-        st.dataframe(wh_eff_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("No data available for Water Heaters.")
