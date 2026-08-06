@@ -117,6 +117,51 @@ def map_dept_to_bu(dept):
         return 'Lowes - Water Heaters'
     return 'Other'
 
+def parse_job_fixtures(title_str, summary_str=""):
+    """
+    Parses fixture quantities from job titles and subtitles.
+    Handles fraction ratios (e.g. '1/1' with Faucet and Toilet -> 1 Faucet, 1 Toilet)
+    and compound names (e.g. 'Sink/faucet' -> 1 Sink, 1 Faucet).
+    """
+    text = (str(title_str) + " " + str(summary_str)).lower()
+    # Strip BU tag like :lowes simple installs
+    text_clean = re.sub(r':\s*lowes.*', '', text)
+    
+    fixture_keywords = [
+        ('Toilet', ['toilet', 'commode']),
+        ('Faucet', ['faucet', 'tap']),
+        ('Garbage Disposal', ['garbage disposal', 'disposal']),
+        ('Sink', ['sink']),
+        ('Water Heater', ['water heater', 'heater']),
+        ('Bidet', ['bidet']),
+        ('Dishwasher', ['dishwasher'])
+    ]
+    
+    found_fixtures = []
+    for std_name, aliases in fixture_keywords:
+        for a in aliases:
+            if re.search(r'\b' + a + r'\b', text_clean):
+                found_fixtures.append(std_name)
+                break
+
+    counts = {}
+    # Check for X/Y ratio e.g., "1/1", "1/2", "2/1"
+    fraction_match = re.search(r'\b(\d+)\s*/\s*(\d+)\b', text)
+    if fraction_match and len(found_fixtures) == 2:
+        x, y = int(fraction_match.group(1)), int(fraction_match.group(2))
+        counts[found_fixtures[0]] = x
+        counts[found_fixtures[1]] = y
+    else:
+        for std_name, aliases in fixture_keywords:
+            pattern = r'\b(\d+)\s*(?:' + '|'.join(aliases) + r')\b'
+            num_match = re.search(pattern, text_clean)
+            if num_match:
+                counts[std_name] = int(num_match.group(1))
+            elif std_name in found_fixtures:
+                counts[std_name] = 1
+
+    return counts
+
 @st.cache_data(ttl=15)
 def fetch_live_google_sheet(url):
     """Reads a public Google Sheet URL into a dictionary of DataFrames."""
@@ -659,6 +704,77 @@ with tab_jobs:
         j_summary['Total_Invoice_Amount'] = j_summary['Total_Invoice_Amount'].map('${:,.2f}'.format)
         
         st.dataframe(j_summary.sort_values(by=['Technician', 'Business Unit']), use_container_width=True, hide_index=True)
+
+        # --- ITEM & FIXTURE BREAKDOWN PER JOB TITLE ---
+        st.subheader("Item & Fixture Quantities Breakdown by Job Title")
+        st.caption("Parses fixture counts from Job Titles & Subtitles (e.g. '1/1' with Faucet & Toilet = 1 Faucet, 1 Toilet).")
+
+        jobs_breakdown_rows = []
+        fixture_cols = ['Toilet', 'Faucet', 'Garbage Disposal', 'Sink', 'Water Heater', 'Bidet', 'Dishwasher']
+
+        summary_col = None
+        for col in jobs_filtered.columns:
+            if any(k in str(col).lower() for k in ['summary', 'subtitle', 'description', 'parent']):
+                summary_col = col
+                break
+
+        for _, row in jobs_filtered.iterrows():
+            title_val = row.get('Title', '')
+            summary_val = row.get(summary_col, '') if summary_col else ''
+            
+            parsed_counts = parse_job_fixtures(title_val, summary_val)
+            
+            row_dict = {
+                'Technician': row['Tech Clean'],
+                'Business Unit': row['Business Unit'],
+                'Job Title': title_val,
+                'Invoice Total': row['Invoice Amount']
+            }
+            for f in fixture_cols:
+                row_dict[f] = parsed_counts.get(f, 0)
+                
+            jobs_breakdown_rows.append(row_dict)
+
+        df_jobs_parsed = pd.DataFrame(jobs_breakdown_rows)
+
+        # 1. Grouped by Job Title Aggregate
+        job_title_agg = df_jobs_parsed.groupby(['Business Unit', 'Job Title']).agg(
+            Job_Count=('Job Title', 'count'),
+            Total_Billed=('Invoice Total', 'sum'),
+            Toilets=('Toilet', 'sum'),
+            Faucets=('Faucet', 'sum'),
+            Disposals=('Garbage Disposal', 'sum'),
+            Sinks=('Sink', 'sum'),
+            Water_Heaters=('Water Heater', 'sum'),
+            Bidets=('Bidet', 'sum'),
+            Dishwashers=('Dishwasher', 'sum')
+        ).reset_index().sort_values(by=['Business Unit', 'Job_Count'], ascending=[True, False])
+
+        job_title_agg['Total_Billed'] = job_title_agg['Total_Billed'].map('${:,.2f}'.format)
+        
+        st.dataframe(
+            job_title_agg, 
+            use_container_width=True, 
+            hide_index=True,
+            column_config={
+                "Job Title": st.column_config.TextColumn("Job Title", width="large"),
+                "Job_Count": st.column_config.NumberColumn("Jobs", width="small"),
+                "Total_Billed": st.column_config.TextColumn("Total Billed", width="medium"),
+            }
+        )
+
+        # 2. Aggregated Fixtures Per Technician
+        st.subheader("Total Installed Fixtures Breakdown by Technician")
+        tech_fixture_agg = df_jobs_parsed.groupby(['Technician', 'Business Unit']).agg(
+            Total_Jobs=('Job Title', 'count'),
+            Toilets=('Toilet', 'sum'),
+            Faucets=('Faucet', 'sum'),
+            Disposals=('Garbage Disposal', 'sum'),
+            Sinks=('Sink', 'sum'),
+            Water_Heaters=('Water Heater', 'sum')
+        ).reset_index().sort_values(by=['Business Unit', 'Technician'])
+
+        st.dataframe(tech_fixture_agg, use_container_width=True, hide_index=True)
 
         st.subheader("Job Summary by Business Unit Level")
         bu_jobs = jobs_filtered.groupby('Business Unit').agg(
