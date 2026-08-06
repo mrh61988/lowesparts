@@ -183,13 +183,11 @@ def detect_dataset_date_range(ts_df, inv_filtered, df_parts):
     """Automatically detects overall date range across timesheets, invoices, and parts transfers."""
     all_dates = []
 
-    # 1. Check Timesheet Clock In Dates
     if ts_df is not None and not ts_df.empty and 'In' in ts_df.columns:
         valid_ts_dates = ts_df['In'].dropna()
         if not valid_ts_dates.empty:
             all_dates.extend(valid_ts_dates.tolist())
 
-    # 2. Check Invoice Dates
     if inv_filtered is not None and not inv_filtered.empty:
         for col in inv_filtered.columns:
             if 'date' in str(col).lower():
@@ -198,7 +196,6 @@ def detect_dataset_date_range(ts_df, inv_filtered, df_parts):
                     all_dates.extend(parsed.tolist())
                     break
 
-    # 3. Check Parts Transfer Dates
     if df_parts is not None and not df_parts.empty:
         for col in df_parts.columns:
             if 'date' in str(col).lower():
@@ -223,7 +220,6 @@ def detect_dataset_date_range(ts_df, inv_filtered, df_parts):
 
         return days, weeks, label, min_d, max_d
 
-    # Default baseline if no date fields exist or data files aren't uploaded yet
     return 31, 31.0 / 7.0, "Monthly (Default)", None, None
 
 # --- SIDEBAR FILTERS & DATA SOURCES ---
@@ -416,7 +412,7 @@ tab_exec, tab_parts, tab_minmax, tab_jobs, tab_inv, tab_ts, tab_test = st.tabs([
 # --- TAB 1: EXECUTIVE SUMMARY TABLE ---
 with tab_exec:
     st.header("Technician Level Master Summary Table")
-    st.markdown("Consolidated view for active technicians combining net parts cost, job counts, invoice revenue, regular/overtime hours, and calculated pay.")
+    st.markdown("Consolidated view for active technicians combining net parts cost, job counts, invoice revenue, regular/overtime hours, calculated pay, and gross pay % of revenue.")
     
     exec_rows = []
     for t in sorted(VALID_TECHS):
@@ -431,8 +427,11 @@ with tab_exec:
         elif p_type == "Commission":
             pay = m["Revenue"] * p_info["rate"]
         elif p_type == "Salary":
-            pay = p_info["annual"] * (total_days / 365.0)  # Dynamically scales to upload timeframe
+            pay = p_info["annual"] * (total_days / 365.0)
             
+        rev = m["Revenue"]
+        pay_pct = (pay / rev * 100.0) if rev > 0 else 0.0
+
         exec_rows.append({
             "Technician": t,
             "Jobs Completed": m["Jobs"],
@@ -440,8 +439,9 @@ with tab_exec:
             "OT Hours": m["OTHours"],
             "Total Hours": m["Hours"],
             "Net Parts Cost": m["PartsCost"],
-            "Attributed Revenue": m["Revenue"],
-            f"Gross Pay ({period_label})": pay
+            "Attributed Revenue": rev,
+            f"Gross Pay ({period_label})": pay,
+            "Gross Pay % of Rev": pay_pct
         })
 
     master_df = pd.DataFrame(exec_rows)
@@ -452,6 +452,7 @@ with tab_exec:
     display_master["Net Parts Cost"] = display_master["Net Parts Cost"].map('${:,.2f}'.format)
     display_master["Attributed Revenue"] = display_master["Attributed Revenue"].map('${:,.2f}'.format)
     display_master[f"Gross Pay ({period_label})"] = display_master[f"Gross Pay ({period_label})"].map('${:,.2f}'.format)
+    display_master["Gross Pay % of Rev"] = display_master["Gross Pay % of Rev"].map('{:.2f}%'.format)
 
     st.dataframe(display_master, use_container_width=True, hide_index=True)
 
@@ -493,7 +494,6 @@ with tab_minmax:
     """)
     
     if not df_parts.empty:
-        # Calculate item-level demand based on dynamic total_weeks
         item_usage = df_parts.groupby(['Business Unit', 'SKU', 'Item']).agg(
             Total_Net_Qty=('Qty', 'sum'),
             Total_Net_Cost=('Total Value', 'sum')
