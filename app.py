@@ -117,6 +117,58 @@ def map_dept_to_bu(dept):
         return 'Lowes - Water Heaters'
     return 'Other'
 
+def extract_job_duration_hours(df):
+    """
+    Extracts or calculates job duration in hours for each row in the jobs dataframe.
+    Checks explicit duration columns first, then falls back to start/end timestamp differences.
+    """
+    if df is None or df.empty:
+        return pd.Series(dtype=float)
+        
+    df_copy = df.copy()
+    duration_col = find_col(df_copy, [['duration'], ['job duration'], ['actual hours'], ['worked hours'], ['total hours'], ['job time'], ['actual duration']])
+    
+    if duration_col:
+        def parse_time_val(val):
+            if pd.isna(val) or val is None:
+                return 0.0
+            val_str = str(val).strip().lower()
+            if ':' in val_str:
+                parts = val_str.split(':')
+                try:
+                    if len(parts) == 2:
+                        return float(parts[0]) + float(parts[1]) / 60.0
+                    elif len(parts) >= 3:
+                        return float(parts[0]) + float(parts[1]) / 60.0 + float(parts[2]) / 3600.0
+                except:
+                    pass
+            hrs = re.search(r'(\d+(?:\.\d+)?)\s*(?:hr|hour)', val_str)
+            mins = re.search(r'(\d+(?:\.\d+)?)\s*(?:min|m)', val_str)
+            if hrs or mins:
+                h = float(hrs.group(1)) if hrs else 0.0
+                m = float(mins.group(1)) if mins else 0.0
+                return h + (m / 60.0)
+            try:
+                num = float(re.sub(r'[^\d.]', '', val_str))
+                if num > 50 and 'hr' not in val_str:
+                    return num / 60.0
+                return num
+            except:
+                return 0.0
+
+        return df_copy[duration_col].apply(parse_time_val)
+
+    start_col = find_col(df_copy, [['actual arrival'], ['started on'], ['actual start'], ['start date'], ['clock in'], ['arrival']])
+    end_col = find_col(df_copy, [['completed on'], ['finished on'], ['actual end'], ['completion date'], ['clock out'], ['complete']])
+
+    if start_col and end_col:
+        start_dt = pd.to_datetime(df_copy[start_col], errors='coerce')
+        end_dt = pd.to_datetime(df_copy[end_col], errors='coerce')
+        dur = (end_dt - start_dt).dt.total_seconds() / 3600.0
+        return dur.fillna(0.0).clip(lower=0.0)
+
+    return pd.Series(0.0, index=df_copy.index)
+
 def parse_job_fixtures(title_str, summary_str=""):
     """
     Parses fixture quantities and identifies primary item type from job titles and subtitles.
@@ -348,6 +400,7 @@ if raw_jobs_df is not None and 'Business Unit' in raw_jobs_df.columns:
     jobs_filtered['Tech Clean'] = jobs_filtered['Assigned Team Members'].apply(get_first_valid_tech)
     jobs_filtered = jobs_filtered[jobs_filtered['Tech Clean'].notna()].copy()
     jobs_filtered['Invoice Amount'] = pd.to_numeric(jobs_filtered['Total Invoice Amount'], errors='coerce').fillna(0)
+    jobs_filtered['Job Duration Hours'] = extract_job_duration_hours(jobs_filtered)
 
 # 3. Invoices Data
 raw_inv_df = read_uploaded_csv(uploaded_invoices)
@@ -709,8 +762,6 @@ with tab_jobs:
             summary_val = row.get(summary_col, '') if summary_col else ''
             
             parsed_counts, item_type_label = parse_job_fixtures(title_val, summary_val)
-            
-            # Standardized title with Title Casing to group 'Sink' and 'sink' together
             clean_title = re.sub(r':\s*lowes.*', '', str(title_val), flags=re.IGNORECASE).strip().title()
 
             tot_fixtures = sum(parsed_counts.values())
@@ -721,23 +772,32 @@ with tab_jobs:
                 'Job Type': clean_title,
                 'Item / Fixture Type': item_type_label,
                 'Invoice Total': row['Invoice Amount'],
+                'Job Duration Hours': row.get('Job Duration Hours', 0.0),
                 'Total Items': max(1, tot_fixtures)
             }
-                
             jobs_breakdown_rows.append(row_dict)
 
         df_jobs_parsed = pd.DataFrame(jobs_breakdown_rows)
 
+        # 1. Job Summary by Tech, Business Unit & Job Title
         st.subheader("Job Summary by Tech, Business Unit & Job Title")
         j_summary = df_jobs_parsed.groupby(['Technician', 'Department', 'Job Type']).agg(
             Job_Count=('Job Type', 'count'),
+            Total_Items=('Total Items', 'sum'),
+            Total_Duration=('Job Duration Hours', 'sum'),
             Total_Invoice_Amount=('Invoice Total', 'sum')
         ).reset_index().sort_values(by=['Technician', 'Department', 'Job_Count'], ascending=[True, True, False])
         
+        j_summary['Avg Job Time'] = (j_summary['Total_Duration'] / j_summary['Job_Count']).map('{:.2f} hrs'.format)
+        j_summary['Avg Item Time'] = (j_summary['Total_Duration'] / j_summary['Total_Items']).map('{:.2f} hrs'.format)
         j_summary.rename(columns={'Department': 'Business Unit', 'Job Type': 'Job Title'}, inplace=True)
         j_summary['Total_Invoice_Amount'] = j_summary['Total_Invoice_Amount'].map('${:,.2f}'.format)
         
-        st.dataframe(j_summary, use_container_width=True, hide_index=True)
+        st.dataframe(
+            j_summary[['Technician', 'Business Unit', 'Job Title', 'Job_Count', 'Avg Job Time', 'Avg Item Time', 'Total_Invoice_Amount']], 
+            use_container_width=True, 
+            hide_index=True
+        )
 
         st.markdown("---")
         # --- SECTION 1: Total Department Revenue per Job Type & Item Type ---
@@ -746,15 +806,18 @@ with tab_jobs:
             Job_Count=('Job Type', 'count'),
             Total_Items=('Total Items', 'sum'),
             Total_Revenue=('Invoice Total', 'sum'),
-            Avg_Revenue_Per_Job=('Invoice Total', 'mean')
+            Avg_Revenue_Per_Job=('Invoice Total', 'mean'),
+            Total_Duration=('Job Duration Hours', 'sum')
         ).reset_index().sort_values(by=['Department', 'Total_Revenue'], ascending=[True, False])
 
+        dept_rev_summary['Avg Job Time'] = (dept_rev_summary['Total_Duration'] / dept_rev_summary['Job_Count']).map('{:.2f} hrs'.format)
+        dept_rev_summary['Avg Item Time'] = (dept_rev_summary['Total_Duration'] / dept_rev_summary['Total_Items']).map('{:.2f} hrs'.format)
         dept_rev_summary['Revenue Per Item'] = (dept_rev_summary['Total_Revenue'] / dept_rev_summary['Total_Items']).map('${:,.2f}'.format)
         dept_rev_summary['Total_Revenue'] = dept_rev_summary['Total_Revenue'].map('${:,.2f}'.format)
         dept_rev_summary['Avg_Revenue_Per_Job'] = dept_rev_summary['Avg_Revenue_Per_Job'].map('${:,.2f}'.format)
         
         st.dataframe(
-            dept_rev_summary[['Department', 'Job Type', 'Item / Fixture Type', 'Job_Count', 'Revenue Per Item', 'Total_Revenue', 'Avg_Revenue_Per_Job']], 
+            dept_rev_summary[['Department', 'Job Type', 'Item / Fixture Type', 'Job_Count', 'Avg Job Time', 'Avg Item Time', 'Revenue Per Item', 'Total_Revenue', 'Avg_Revenue_Per_Job']], 
             use_container_width=True, 
             hide_index=True,
             column_config={
@@ -762,6 +825,8 @@ with tab_jobs:
                 "Job Type": st.column_config.TextColumn("Job Type", width="medium"),
                 "Item / Fixture Type": st.column_config.TextColumn("Item / Fixture Type", width="medium"),
                 "Job_Count": st.column_config.NumberColumn("Jobs", width="small"),
+                "Avg Job Time": st.column_config.TextColumn("Avg Job Time", width="small"),
+                "Avg Item Time": st.column_config.TextColumn("Avg Item Time", width="small"),
                 "Revenue Per Item": st.column_config.TextColumn("Revenue / Item", width="medium"),
                 "Total_Revenue": st.column_config.TextColumn("Total Revenue", width="medium"),
                 "Avg_Revenue_Per_Job": st.column_config.TextColumn("Avg Rev / Job", width="medium")
@@ -782,15 +847,18 @@ with tab_jobs:
             Job_Count=('Job Type', 'count'),
             Total_Items=('Total Items', 'sum'),
             Total_Revenue=('Invoice Total', 'sum'),
-            Avg_Revenue_Per_Job=('Invoice Total', 'mean')
+            Avg_Revenue_Per_Job=('Invoice Total', 'mean'),
+            Total_Duration=('Job Duration Hours', 'sum')
         ).reset_index().sort_values(by=['Technician', 'Total_Revenue'], ascending=[True, False])
 
+        tech_rev_summary['Avg Job Time'] = (tech_rev_summary['Total_Duration'] / tech_rev_summary['Job_Count']).map('{:.2f} hrs'.format)
+        tech_rev_summary['Avg Item Time'] = (tech_rev_summary['Total_Duration'] / tech_rev_summary['Total_Items']).map('{:.2f} hrs'.format)
         tech_rev_summary['Revenue Per Item'] = (tech_rev_summary['Total_Revenue'] / tech_rev_summary['Total_Items']).map('${:,.2f}'.format)
         tech_rev_summary['Total_Revenue'] = tech_rev_summary['Total_Revenue'].map('${:,.2f}'.format)
         tech_rev_summary['Avg_Revenue_Per_Job'] = tech_rev_summary['Avg_Revenue_Per_Job'].map('${:,.2f}'.format)
 
         st.dataframe(
-            tech_rev_summary[['Technician', 'Department', 'Job Type', 'Item / Fixture Type', 'Job_Count', 'Revenue Per Item', 'Total_Revenue', 'Avg_Revenue_Per_Job']], 
+            tech_rev_summary[['Technician', 'Department', 'Job Type', 'Item / Fixture Type', 'Job_Count', 'Avg Job Time', 'Avg Item Time', 'Revenue Per Item', 'Total_Revenue', 'Avg_Revenue_Per_Job']], 
             use_container_width=True, 
             hide_index=True,
             column_config={
@@ -799,6 +867,8 @@ with tab_jobs:
                 "Job Type": st.column_config.TextColumn("Job Type", width="medium"),
                 "Item / Fixture Type": st.column_config.TextColumn("Item / Fixture Type", width="medium"),
                 "Job_Count": st.column_config.NumberColumn("Jobs", width="small"),
+                "Avg Job Time": st.column_config.TextColumn("Avg Job Time", width="small"),
+                "Avg Item Time": st.column_config.TextColumn("Avg Item Time", width="small"),
                 "Revenue Per Item": st.column_config.TextColumn("Revenue / Item", width="medium"),
                 "Total_Revenue": st.column_config.TextColumn("Total Revenue", width="medium"),
                 "Avg_Revenue_Per_Job": st.column_config.TextColumn("Avg Rev / Job", width="medium")
@@ -823,15 +893,18 @@ with tab_jobs:
             Job_Count=('Job Type', 'count'),
             Total_Items=('Total Items', 'sum'),
             Total_Billed=('Invoice Total', 'sum'),
-            Avg_Revenue_Per_Job=('Invoice Total', 'mean')
+            Avg_Revenue_Per_Job=('Invoice Total', 'mean'),
+            Total_Duration=('Job Duration Hours', 'sum')
         ).reset_index().sort_values(by=['Department', 'Job_Count'], ascending=[True, False])
 
+        job_title_agg['Avg Job Time'] = (job_title_agg['Total_Duration'] / job_title_agg['Job_Count']).map('{:.2f} hrs'.format)
+        job_title_agg['Avg Item Time'] = (job_title_agg['Total_Duration'] / job_title_agg['Total_Items']).map('{:.2f} hrs'.format)
         job_title_agg['Revenue Per Job'] = job_title_agg['Avg_Revenue_Per_Job'].map('${:,.2f}'.format)
         job_title_agg['Revenue Per Item'] = (job_title_agg['Total_Billed'] / job_title_agg['Total_Items']).map('${:,.2f}'.format)
         job_title_agg['Total_Billed'] = job_title_agg['Total_Billed'].map('${:,.2f}'.format)
 
         show_title_cols = [
-            'Department', 'Job Type', 'Job_Count', 'Revenue Per Job', 'Revenue Per Item', 'Total_Billed'
+            'Department', 'Job Type', 'Job_Count', 'Avg Job Time', 'Avg Item Time', 'Revenue Per Job', 'Revenue Per Item', 'Total_Billed'
         ]
         
         st.dataframe(
@@ -842,6 +915,8 @@ with tab_jobs:
                 "Department": st.column_config.TextColumn("Department", width="medium"),
                 "Job Type": st.column_config.TextColumn("Job Title", width="large"),
                 "Job_Count": st.column_config.NumberColumn("Jobs", width="small"),
+                "Avg Job Time": st.column_config.TextColumn("Avg Job Time", width="small"),
+                "Avg Item Time": st.column_config.TextColumn("Avg Item Time", width="small"),
                 "Revenue Per Job": st.column_config.TextColumn("Revenue / Job", width="medium"),
                 "Revenue Per Item": st.column_config.TextColumn("Revenue / Item", width="medium"),
                 "Total_Billed": st.column_config.TextColumn("Total Billed", width="medium"),
@@ -849,12 +924,19 @@ with tab_jobs:
         )
 
         st.subheader("Job Summary by Business Unit Level")
-        bu_jobs = jobs_filtered.groupby('Business Unit').agg(
-            Total_Jobs=('#ID', 'count'),
-            Total_Billed=('Invoice Amount', 'sum')
+        bu_jobs = df_jobs_parsed.groupby('Department').agg(
+            Total_Jobs=('Job Type', 'count'),
+            Total_Items=('Total Items', 'sum'),
+            Total_Billed=('Invoice Total', 'sum'),
+            Total_Duration=('Job Duration Hours', 'sum')
         ).reset_index()
+
+        bu_jobs['Avg Job Time'] = (bu_jobs['Total_Duration'] / bu_jobs['Total_Jobs']).map('{:.2f} hrs'.format)
+        bu_jobs['Avg Item Time'] = (bu_jobs['Total_Duration'] / bu_jobs['Total_Items']).map('{:.2f} hrs'.format)
         bu_jobs['Total_Billed'] = bu_jobs['Total_Billed'].map('${:,.2f}'.format)
-        st.dataframe(bu_jobs, use_container_width=True, hide_index=True)
+        bu_jobs.rename(columns={'Department': 'Business Unit'}, inplace=True)
+
+        st.dataframe(bu_jobs[['Business Unit', 'Total_Jobs', 'Avg Job Time', 'Avg Item Time', 'Total_Billed']], use_container_width=True, hide_index=True)
     else:
         st.info("Upload 'all jobs.csv' in the sidebar.")
 
