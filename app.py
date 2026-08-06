@@ -3,8 +3,8 @@ import pandas as pd
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="NexSys Operations & Payroll Analyzer", layout="wide")
-st.title("NexSys Operations & Payroll Analyzer")
-st.markdown("Detailed tabular analysis across Parts Usage, Jobs, Invoices, Timesheets, and Payroll for **Simple Installs** and **Water Heaters**.")
+st.title("NexSys Operations & Financial Analyzer")
+st.markdown("Detailed tabular analysis across Parts Usage, Jobs, Invoices, Timesheets, Payroll, and **Replenishment Efficiency** for **Simple Installs** and **Water Heaters**.")
 
 # --- VALID TECHNICIANS LIST & PAY STRUCTURE ---
 PAY_STRUCTURE = {
@@ -216,13 +216,14 @@ if ts_df is not None and not ts_df.empty:
                 tech_metrics[t]["Hours"] += split_hrs
 
 # --- TABS ---
-tab_exec, tab_pay, tab_parts, tab_jobs, tab_inv, tab_ts = st.tabs([
+tab_exec, tab_pay, tab_parts, tab_jobs, tab_inv, tab_ts, tab_test = st.tabs([
     "📈 Executive Summary Table",
     "💵 Payroll Analysis",
     "⚙️ Parts Usage",
     "📋 Jobs Analysis",
     "💳 Invoices Analysis",
-    "⏱️ Timesheets Analysis"
+    "⏱️ Timesheets Analysis",
+    "🧪 Test Section: Parts Efficiency"
 ])
 
 # --- TAB 1: EXECUTIVE SUMMARY TABLE ---
@@ -417,3 +418,116 @@ with tab_ts:
         st.dataframe(ts_df[show_cols], use_container_width=True, hide_index=True)
     else:
         st.info("Upload 'timesheets.csv' in the sidebar.")
+
+# --- TAB 7: TEST SECTION - PARTS EFFICIENCY ---
+with tab_test:
+    st.header("🧪 Test Section: Truck Replenishment & Material Efficiency")
+    st.markdown("""
+    This test section evaluates **Truck Replenishment vs. Output (Revenue & Jobs)** to identify over-users, 
+    unrecorded transfers, and inventory hygiene anomalies across your active technicians.
+    """)
+
+    # 1. Truck Material Intensity Table
+    st.subheader("1. Truck Material Intensity (Replenishment vs. Revenue & Jobs)")
+    
+    test_rows = []
+    for t in sorted(VALID_TECHS):
+        m = tech_metrics[t]
+        
+        if not df_parts.empty and t in df_parts['Tech'].values:
+            tech_p = df_parts[df_parts['Tech'] == t]
+            restock_days = tech_p['Date'].nunique()
+            line_items = len(tech_p)
+            net_parts_cost = tech_p['Total Value'].sum()
+        else:
+            restock_days = 0
+            line_items = 0
+            net_parts_cost = m['PartsCost']
+            
+        cost_per_job = (net_parts_cost / m['Jobs']) if m['Jobs'] > 0 else 0.0
+        mat_pct = (net_parts_cost / m['Revenue'] * 100) if m['Revenue'] > 0 else 0.0
+        
+        # Operational Status Flag
+        if m['Jobs'] > 0 and net_parts_cost == 0:
+            status_flag = "⚠️ Zero Parts Restocked"
+        elif mat_pct > 15.0:
+            status_flag = "🔴 High Material %"
+        elif mat_pct > 0 and mat_pct < 2.0 and m['Jobs'] > 5:
+            status_flag = "🟡 Low Material % (Unreported?)"
+        else:
+            status_flag = "🟢 Normal Range"
+
+        test_rows.append({
+            "Technician": t,
+            "Jobs Completed": m["Jobs"],
+            "Attributed Revenue": m["Revenue"],
+            "Net Replenishment Cost": net_parts_cost,
+            "Replenishment / Job": cost_per_job,
+            "Material % of Revenue": mat_pct,
+            "Operational Flag": status_flag
+        })
+
+    intensity_df = pd.DataFrame(test_rows)
+    disp_intensity = intensity_df.copy()
+    disp_intensity["Attributed Revenue"] = disp_intensity["Attributed Revenue"].map('${:,.2f}'.format)
+    disp_intensity["Net Replenishment Cost"] = disp_intensity["Net Replenishment Cost"].map('${:,.2f}'.format)
+    disp_intensity["Replenishment / Job"] = disp_intensity["Replenishment / Job"].map('${:,.2f}'.format)
+    disp_intensity["Material % of Revenue"] = disp_intensity["Material % of Revenue"].map('{:.1f}%'.format)
+
+    st.dataframe(disp_intensity, use_container_width=True, hide_index=True)
+
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.subheader("2. Restock Velocity & Transfer Frequency")
+        velocity_rows = []
+        for t in sorted(VALID_TECHS):
+            if not df_parts.empty and t in df_parts['Tech'].values:
+                tech_p = df_parts[df_parts['Tech'] == t]
+                restock_events = tech_p['Date'].nunique()
+                line_items = len(tech_p)
+                net_cost = tech_p['Total Value'].sum()
+                avg_event_cost = net_cost / restock_events if restock_events > 0 else 0.0
+            else:
+                restock_events = 0
+                line_items = 0
+                net_cost = 0.0
+                avg_event_cost = 0.0
+
+            velocity_rows.append({
+                "Technician": t,
+                "Restock Days / Events": restock_events,
+                "Line Items Restocked": line_items,
+                "Net Replenishment Cost": net_cost,
+                "Avg $ / Restock Event": avg_event_cost
+            })
+
+        velocity_df = pd.DataFrame(velocity_rows)
+        disp_vel = velocity_df.copy()
+        disp_vel["Net Replenishment Cost"] = disp_vel["Net Replenishment Cost"].map('${:,.2f}'.format)
+        disp_vel["Avg $ / Restock Event"] = disp_vel["Avg $ / Restock Event"].map('${:,.2f}'.format)
+        st.dataframe(disp_vel, use_container_width=True, hide_index=True)
+
+    with col_b:
+        st.subheader("3. Labor Productivity (Revenue / Hour)")
+        prod_rows = []
+        for t in sorted(VALID_TECHS):
+            m = tech_metrics[t]
+            rev_per_hr = (m["Revenue"] / m["Hours"]) if m["Hours"] > 0 else 0.0
+            rev_per_job = (m["Revenue"] / m["Jobs"]) if m["Jobs"] > 0 else 0.0
+            
+            prod_rows.append({
+                "Technician": t,
+                "Logged Hours": m["Hours"],
+                "Attributed Revenue": m["Revenue"],
+                "Revenue / Hour": rev_per_hr,
+                "Revenue / Job": rev_per_job
+            })
+
+        prod_df = pd.DataFrame(prod_rows)
+        disp_prod = prod_df.copy()
+        disp_prod["Logged Hours"] = disp_prod["Logged Hours"].map('{:,.2f} hrs'.format)
+        disp_prod["Attributed Revenue"] = disp_prod["Attributed Revenue"].map('${:,.2f}'.format)
+        disp_prod["Revenue / Hour"] = disp_prod["Revenue / Hour"].map('${:,.2f}/hr'.format)
+        disp_prod["Revenue / Job"] = disp_prod["Revenue / Job"].map('${:,.2f}'.format)
+        st.dataframe(disp_prod, use_container_width=True, hide_index=True)
