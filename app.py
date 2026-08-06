@@ -43,6 +43,14 @@ PAY_STRUCTURE = {
 VALID_TECHS = list(PAY_STRUCTURE.keys())
 
 # --- HELPER FUNCTIONS ---
+def find_col(df, keywords):
+    """Fuzzy column matcher handling hidden line breaks, newlines, and spaces in Google Sheets."""
+    for c in df.columns:
+        c_clean = str(c).lower().replace('\n', ' ')
+        if all(k.lower() in c_clean for k in keywords):
+            return c
+    return None
+
 def clean_sku(val):
     """Robust SKU cleaner handling integers, floats like 40699.0, strings, and whitespace."""
     if pd.isna(val) or val is None:
@@ -193,7 +201,6 @@ df_current_minmax = pd.DataFrame()
 if sheets_dict:
     sheet_names = list(sheets_dict.keys())
     
-    # Identify parts sheets
     simple_sheet = sheet_names[0] if len(sheet_names) > 0 else None
     wh_sheet = sheet_names[1] if len(sheet_names) > 1 else simple_sheet
     
@@ -201,7 +208,7 @@ if sheets_dict:
     df_wh_p = process_parts_df(sheets_dict[wh_sheet], 'Lowes - Water Heaters') if wh_sheet else pd.DataFrame()
     df_parts = pd.concat([df_simple_p, df_wh_p], ignore_index=True)
     
-    # Identify current Min/Max sheet (e.g. "Nexsys Min/Max")
+    # Identify current Min/Max sheet
     minmax_sheet = None
     for name in sheet_names:
         if 'min' in name.lower() and 'max' in name.lower():
@@ -211,24 +218,31 @@ if sheets_dict:
     if minmax_sheet and minmax_sheet in sheets_dict:
         raw_minmax = sheets_dict[minmax_sheet].copy()
         
-        # FIX: Force flatten column names to remove newlines (e.g. 'Warehouse\nMin/Max' -> 'Warehouse Min/Max')
-        raw_minmax.columns = raw_minmax.columns.str.replace(r'\n', ' ', regex=True).str.strip()
-        
-        if 'SKU' in raw_minmax.columns and 'Warehouse Min/Max' in raw_minmax.columns:
-            raw_minmax['SKU'] = raw_minmax['SKU'].apply(clean_sku)
-            parsed_mins_maxs = raw_minmax['Warehouse Min/Max'].apply(parse_min_max).tolist()
+        # Fuzzy column locator to bypass Line Breaks and spacing issues
+        c_sku = find_col(raw_minmax, ['sku'])
+        c_minmax = find_col(raw_minmax, ['warehouse', 'min'])
+        c_qty = find_col(raw_minmax, ['qty'])
+        c_dept = find_col(raw_minmax, ['department'])
+        c_item = find_col(raw_minmax, ['item'])
+
+        if c_sku and c_minmax:
+            raw_minmax['SKU_clean'] = raw_minmax[c_sku].apply(clean_sku)
+            parsed_mins_maxs = raw_minmax[c_minmax].apply(parse_min_max).tolist()
             raw_minmax[['Current Min', 'Current Max']] = parsed_mins_maxs
-            if 'Qty' in raw_minmax.columns:
-                raw_minmax['Current On Hand'] = pd.to_numeric(raw_minmax['Qty'], errors='coerce').fillna(0).astype(int)
+            
+            if c_qty:
+                raw_minmax['Current On Hand'] = pd.to_numeric(raw_minmax[c_qty], errors='coerce').fillna(0).astype(int)
             else:
                 raw_minmax['Current On Hand'] = 0
-            
-            if 'Department' in raw_minmax.columns:
-                raw_minmax['Business Unit'] = raw_minmax['Department'].apply(map_dept_to_bu)
+                
+            if c_dept:
+                raw_minmax['Business Unit'] = raw_minmax[c_dept].apply(map_dept_to_bu)
             else:
                 raw_minmax['Business Unit'] = 'Unknown'
                 
-            df_current_minmax = raw_minmax
+            raw_minmax['Item Name'] = raw_minmax[c_item] if c_item else ''
+            
+            df_current_minmax = raw_minmax[['SKU_clean', 'Item Name', 'Business Unit', 'Current On Hand', 'Current Min', 'Current Max']].copy()
 
 # 2. Jobs Data
 raw_jobs_df = read_uploaded_csv(uploaded_jobs)
@@ -399,9 +413,9 @@ with tab_minmax:
     st.markdown("""
     Comparison of **Current Warehouse Min/Max settings** (from `Nexsys Min/Max` sheet) against **Suggested 1.5-Week Inventory Targets** 
     calculated from historical demand (July 2026 / 4.43 weeks).
-    - **Current Min / Max:** Active warehouse min/max levels in Google Sheets.
+    - **Current Min / Max:** Active warehouse min/max levels directly from Google Sheets.
     - **Suggested Min (1.0 Wk):** Reorder point equal to 1 week of demand.
-    - **Target Stock (1.5 Wks):** Recommended shelf stock level.
+    - **Target Stock (1.5 Wks):** Recommended ideal shelf stock level.
     - **Suggested Max (2.0 Wks):** Order-up-to ceiling level.
     """)
     
@@ -414,25 +428,23 @@ with tab_minmax:
             Total_Net_Cost=('Total Value', 'sum')
         ).reset_index()
         
-        item_usage['SKU'] = item_usage['SKU'].apply(clean_sku)
+        item_usage['SKU_clean'] = item_usage['SKU'].apply(clean_sku)
         item_usage['Weekly_Avg_Qty'] = item_usage['Total_Net_Qty'] / total_weeks
         item_usage['Min_Stock_Qty'] = np.ceil(item_usage['Weekly_Avg_Qty'] * 1.0).clip(lower=1).astype(int)
         item_usage['Target_Stock_Qty'] = np.ceil(item_usage['Weekly_Avg_Qty'] * 1.5).astype(int)
         item_usage['Max_Stock_Qty'] = np.maximum(np.ceil(item_usage['Weekly_Avg_Qty'] * 2.0), item_usage['Min_Stock_Qty'] + 1).astype(int)
         
-        # Perform outer merge with Current Min/Max Sheet
+        # Perform outer merge exclusively on SKU with Current Min/Max Sheet
         if not df_current_minmax.empty:
-            minmax_sub = df_current_minmax[['SKU', 'Item Name', 'Business Unit', 'Current On Hand', 'Current Min', 'Current Max']].copy()
-            minmax_sub['SKU'] = minmax_sub['SKU'].apply(clean_sku)
-            
             merged_minmax = pd.merge(
-                minmax_sub,
-                item_usage[['SKU', 'Business Unit', 'Item', 'Total_Net_Qty', 'Weekly_Avg_Qty', 'Min_Stock_Qty', 'Target_Stock_Qty', 'Max_Stock_Qty']], 
-                on=['SKU', 'Business Unit'], 
+                df_current_minmax,
+                item_usage[['SKU_clean', 'Business Unit', 'Item', 'Total_Net_Qty', 'Weekly_Avg_Qty', 'Min_Stock_Qty', 'Target_Stock_Qty', 'Max_Stock_Qty']], 
+                on=['SKU_clean'], 
                 how='outer'
             )
             
-            # Fill descriptions and missing metrics
+            # Resolve Column Combos safely
+            merged_minmax['Business Unit'] = merged_minmax['Business Unit_y'].fillna(merged_minmax['Business Unit_x']).fillna('Unknown')
             merged_minmax['Item Description'] = merged_minmax['Item Name'].fillna(merged_minmax['Item']).fillna('')
             merged_minmax['Total_Net_Qty'] = merged_minmax['Total_Net_Qty'].fillna(0).astype(int)
             merged_minmax['Weekly_Avg_Qty'] = merged_minmax['Weekly_Avg_Qty'].fillna(0.0)
@@ -444,6 +456,10 @@ with tab_minmax:
             merged_minmax['Min_Stock_Qty'] = merged_minmax['Min_Stock_Qty'].fillna(0).astype(int)
             merged_minmax['Target_Stock_Qty'] = merged_minmax['Target_Stock_Qty'].fillna(0).astype(int)
             merged_minmax['Max_Stock_Qty'] = merged_minmax['Max_Stock_Qty'].fillna(0).astype(int)
+            
+            # Map SKU string properly
+            merged_minmax['SKU'] = merged_minmax['SKU_clean']
+            
         else:
             merged_minmax = item_usage.copy()
             merged_minmax.rename(columns={'Item': 'Item Description'}, inplace=True)
@@ -489,6 +505,7 @@ with tab_minmax:
             bu_df = merged_minmax[merged_minmax['Business Unit'] == bu_name].copy()
             if not bu_df.empty:
                 bu_df.sort_values(by='Target_Stock_Qty', ascending=False, inplace=True)
+                
                 bu_df.rename(columns={
                     'SKU': 'SKU',
                     'Total_Net_Qty': 'July Net',
@@ -499,7 +516,6 @@ with tab_minmax:
                 
                 bu_df['Wk Avg'] = bu_df['Wk Avg'].map('{:.2f}'.format)
                 
-                # Streamlined columns so no horizontal scrolling is required
                 show_cols = [
                     'SKU', 'Item Description', 'July Net', 'Wk Avg', 
                     'On Hand', 'Min (Curr ➔ Sug)', 'Max (Curr ➔ Sug)', 'Target (1.5 Wk)', 
