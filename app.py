@@ -43,6 +43,15 @@ PAY_STRUCTURE = {
 VALID_TECHS = list(PAY_STRUCTURE.keys())
 
 # --- HELPER FUNCTIONS ---
+def clean_sku(val):
+    """Robust SKU cleaner handling integers, floats like 40699.0, strings, and whitespace."""
+    if pd.isna(val) or val is None:
+        return ""
+    val_str = str(val).strip()
+    if val_str.endswith('.0'):
+        val_str = val_str[:-2]
+    return val_str
+
 def normalize_single_tech(name):
     """Normalizes fleet, contractor, or user names using exact word boundaries."""
     name_str = str(name).strip()
@@ -83,6 +92,15 @@ def parse_min_max(val):
             return 0, 0
     return 0, 0
 
+def map_dept_to_bu(dept):
+    """Standardizes Department string from Nexsys Min/Max sheet to Business Unit."""
+    dept_str = str(dept).lower().strip()
+    if 'simple' in dept_str:
+        return 'Lowes - Simple Installs'
+    if 'water' in dept_str or 'heater' in dept_str:
+        return 'Lowes - Water Heaters'
+    return 'Other'
+
 @st.cache_data
 def load_google_sheet(url):
     """Reads a public Google Sheet URL into a dictionary of DataFrames."""
@@ -120,6 +138,9 @@ def process_parts_df(df, business_unit):
         df.loc[is_return, 'Total Value'] = -df.loc[is_return, 'Total Value']
         if 'Qty' in df.columns:
             df.loc[is_return, 'Qty'] = -df.loc[is_return, 'Qty']
+
+    if 'SKU' in df.columns:
+        df['SKU'] = df['SKU'].apply(clean_sku)
 
     df['Transferred To'] = df['Transferred To'].astype(str).str.replace("Matt's TransitFleet", "Matt S")
     df['Tech'] = df['Transferred To'].apply(get_first_valid_tech)
@@ -165,6 +186,7 @@ df_current_minmax = pd.DataFrame()
 if sheets_dict:
     sheet_names = list(sheets_dict.keys())
     
+    # Identify parts sheets
     simple_sheet = sheet_names[0] if len(sheet_names) > 0 else None
     wh_sheet = sheet_names[1] if len(sheet_names) > 1 else simple_sheet
     
@@ -172,6 +194,7 @@ if sheets_dict:
     df_wh_p = process_parts_df(sheets_dict[wh_sheet], 'Lowes - Water Heaters') if wh_sheet else pd.DataFrame()
     df_parts = pd.concat([df_simple_p, df_wh_p], ignore_index=True)
     
+    # Identify current Min/Max sheet (e.g. "Nexsys Min/Max")
     minmax_sheet = None
     for name in sheet_names:
         if 'min' in name.lower() and 'max' in name.lower():
@@ -181,13 +204,19 @@ if sheets_dict:
     if minmax_sheet and minmax_sheet in sheets_dict:
         raw_minmax = sheets_dict[minmax_sheet].copy()
         if 'SKU' in raw_minmax.columns and 'Warehouse Min/Max' in raw_minmax.columns:
-            raw_minmax['SKU'] = raw_minmax['SKU'].astype(str).str.strip()
+            raw_minmax['SKU'] = raw_minmax['SKU'].apply(clean_sku)
             parsed_mins_maxs = raw_minmax['Warehouse Min/Max'].apply(parse_min_max).tolist()
             raw_minmax[['Current Min', 'Current Max']] = parsed_mins_maxs
             if 'Qty' in raw_minmax.columns:
                 raw_minmax['Current On Hand'] = pd.to_numeric(raw_minmax['Qty'], errors='coerce').fillna(0).astype(int)
             else:
                 raw_minmax['Current On Hand'] = 0
+            
+            if 'Department' in raw_minmax.columns:
+                raw_minmax['Business Unit'] = raw_minmax['Department'].apply(map_dept_to_bu)
+            else:
+                raw_minmax['Business Unit'] = 'Unknown'
+                
             df_current_minmax = raw_minmax
 
 # 2. Jobs Data
@@ -368,35 +397,48 @@ with tab_minmax:
     if not df_parts.empty:
         total_weeks = 31.0 / 7.0
         
-        # Calculate item-level demand
+        # Calculate item-level demand from df_parts
         item_usage = df_parts.groupby(['Business Unit', 'SKU', 'Item']).agg(
             Total_Net_Qty=('Qty', 'sum'),
             Total_Net_Cost=('Total Value', 'sum')
         ).reset_index()
         
-        item_usage['SKU'] = item_usage['SKU'].astype(str).str.strip()
+        item_usage['SKU'] = item_usage['SKU'].apply(clean_sku)
         item_usage['Weekly_Avg_Qty'] = item_usage['Total_Net_Qty'] / total_weeks
         item_usage['Min_Stock_Qty'] = np.ceil(item_usage['Weekly_Avg_Qty'] * 1.0).clip(lower=1).astype(int)
         item_usage['Target_Stock_Qty'] = np.ceil(item_usage['Weekly_Avg_Qty'] * 1.5).astype(int)
         item_usage['Max_Stock_Qty'] = np.maximum(np.ceil(item_usage['Weekly_Avg_Qty'] * 2.0), item_usage['Min_Stock_Qty'] + 1).astype(int)
         
-        # Merge with Current Min/Max Sheet if loaded
+        # Perform outer merge with Current Min/Max Sheet
         if not df_current_minmax.empty:
+            minmax_sub = df_current_minmax[['SKU', 'Item Name', 'Business Unit', 'Current On Hand', 'Current Min', 'Current Max']].copy()
+            minmax_sub['SKU'] = minmax_sub['SKU'].apply(clean_sku)
+            
             merged_minmax = pd.merge(
-                item_usage, 
-                df_current_minmax[['SKU', 'Current On Hand', 'Current Min', 'Current Max']], 
-                on='SKU', 
-                how='left'
-            ).fillna({'Current On Hand': 0, 'Current Min': 0, 'Current Max': 0})
+                minmax_sub,
+                item_usage[['SKU', 'Business Unit', 'Item', 'Total_Net_Qty', 'Weekly_Avg_Qty', 'Min_Stock_Qty', 'Target_Stock_Qty', 'Max_Stock_Qty']], 
+                on=['SKU', 'Business Unit'], 
+                how='outer'
+            )
+            
+            # Fill descriptions and missing metrics
+            merged_minmax['Item Description'] = merged_minmax['Item Name'].fillna(merged_minmax['Item']).fillna('')
+            merged_minmax['Total_Net_Qty'] = merged_minmax['Total_Net_Qty'].fillna(0).astype(int)
+            merged_minmax['Weekly_Avg_Qty'] = merged_minmax['Weekly_Avg_Qty'].fillna(0.0)
+            
+            merged_minmax['Current On Hand'] = merged_minmax['Current On Hand'].fillna(0).astype(int)
+            merged_minmax['Current Min'] = merged_minmax['Current Min'].fillna(0).astype(int)
+            merged_minmax['Current Max'] = merged_minmax['Current Max'].fillna(0).astype(int)
+            
+            merged_minmax['Min_Stock_Qty'] = merged_minmax['Min_Stock_Qty'].fillna(0).astype(int)
+            merged_minmax['Target_Stock_Qty'] = merged_minmax['Target_Stock_Qty'].fillna(0).astype(int)
+            merged_minmax['Max_Stock_Qty'] = merged_minmax['Max_Stock_Qty'].fillna(0).astype(int)
         else:
             merged_minmax = item_usage.copy()
+            merged_minmax.rename(columns={'Item': 'Item Description'}, inplace=True)
             merged_minmax['Current On Hand'] = 0
             merged_minmax['Current Min'] = 0
             merged_minmax['Current Max'] = 0
-
-        merged_minmax['Current Min'] = merged_minmax['Current Min'].astype(int)
-        merged_minmax['Current Max'] = merged_minmax['Current Max'].astype(int)
-        merged_minmax['Current On Hand'] = merged_minmax['Current On Hand'].astype(int)
 
         # Compact Min & Max Comparison formatting
         merged_minmax['Min (Curr ➔ Sug)'] = merged_minmax['Current Min'].astype(str) + " ➔ " + merged_minmax['Min_Stock_Qty'].astype(str)
@@ -408,6 +450,8 @@ with tab_minmax:
             s_min, s_max = row['Min_Stock_Qty'], row['Max_Stock_Qty']
             
             if c_min == 0 and c_max == 0:
+                if s_min == 0 and s_max == 0:
+                    return "⚪ Zero Demand"
                 return "⚠️ Set Min/Max"
             
             d_min = s_min - c_min
@@ -436,7 +480,6 @@ with tab_minmax:
                 bu_df.sort_values(by='Target_Stock_Qty', ascending=False, inplace=True)
                 bu_df.rename(columns={
                     'SKU': 'SKU',
-                    'Item': 'Item Description',
                     'Total_Net_Qty': 'July Net',
                     'Weekly_Avg_Qty': 'Wk Avg',
                     'Current On Hand': 'On Hand',
@@ -445,7 +488,6 @@ with tab_minmax:
                 
                 bu_df['Wk Avg'] = bu_df['Wk Avg'].map('{:.2f}'.format)
                 
-                # Streamlined columns so no horizontal scrolling is required
                 show_cols = [
                     'SKU', 'Item Description', 'July Net', 'Wk Avg', 
                     'On Hand', 'Min (Curr ➔ Sug)', 'Max (Curr ➔ Sug)', 'Target (1.5 Wk)', 
