@@ -8,13 +8,13 @@ st.markdown("Detailed tabular analysis across Parts Usage, Jobs, Invoices, Times
 
 # --- VALID TECHNICIANS LIST & PAY STRUCTURE ---
 PAY_STRUCTURE = {
-    "Nate Smith": {"type": "Hourly", "rate": 25.0, "details": "$25.00/hr"},
-    "Bill Black": {"type": "Hourly", "rate": 25.0, "details": "$25.00/hr"},
+    "Nate Smith": {"type": "Hourly", "rate": 22.50, "details": "$22.50/hr"},
+    "Bill Black": {"type": "Hourly", "rate": 25.00, "details": "$25.00/hr"},
     "Sean Marble": {"type": "Salary", "annual": 70000.0, "details": "$70,000/yr ($5,833.33/mo)"},
-    "Tanner LaForge": {"type": "Hourly", "rate": 25.0, "details": "$25.00/hr"},
+    "Tanner LaForge": {"type": "Hourly", "rate": 25.00, "details": "$25.00/hr"},
     "Erik Tange": {"type": "Commission", "rate": 0.34, "details": "34% of Invoice Revenue"},
     "Bryan Pickett": {"type": "Commission", "rate": 0.34, "details": "34% of Invoice Revenue"},
-    "Matt Schlosser": {"type": "Hourly", "rate": 25.0, "details": "$25.00/hr"},
+    "Matt Schlosser": {"type": "Hourly", "rate": 25.00, "details": "$25.00/hr"},
     "Mathew Hodges": {"type": "Salary", "annual": 65000.0, "details": "$65,000/yr ($5,416.67/mo)"}
 }
 
