@@ -5,6 +5,26 @@ import re
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="NexSys Operations & Payroll Analyzer", layout="wide")
+
+# --- INJECT CUSTOM CSS FOR TEXT WRAPPING & ZERO HORIZONTAL SCROLLING ---
+st.markdown("""
+<style>
+/* Force text wrapping and fit container for Streamlit tables and dataframes */
+div[data-testid="stDataFrame"] td, div[data-testid="stDataFrame"] th {
+    white-space: normal !important;
+    word-wrap: break-word !important;
+}
+.stTable td, .stTable th {
+    white-space: normal !important;
+    word-wrap: break-word !important;
+}
+/* Ensure dataframe container uses full width cleanly */
+div[data-testid="stDataFrame"] {
+    width: 100% !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("NexSys Operations & Financial Analyzer")
 st.markdown("Detailed tabular analysis across Parts Usage, Jobs, Invoices, Timesheets, Warehouse Inventory Targets, and **Replenishment Efficiency** for **Simple Installs** and **Water Heaters**.")
 
@@ -145,7 +165,6 @@ df_current_minmax = pd.DataFrame()
 if sheets_dict:
     sheet_names = list(sheets_dict.keys())
     
-    # Identify parts sheets
     simple_sheet = sheet_names[0] if len(sheet_names) > 0 else None
     wh_sheet = sheet_names[1] if len(sheet_names) > 1 else simple_sheet
     
@@ -153,7 +172,6 @@ if sheets_dict:
     df_wh_p = process_parts_df(sheets_dict[wh_sheet], 'Lowes - Water Heaters') if wh_sheet else pd.DataFrame()
     df_parts = pd.concat([df_simple_p, df_wh_p], ignore_index=True)
     
-    # Identify current Min/Max sheet (e.g. "Nexsys Min/Max")
     minmax_sheet = None
     for name in sheet_names:
         if 'min' in name.lower() and 'max' in name.lower():
@@ -380,6 +398,10 @@ with tab_minmax:
         merged_minmax['Current Max'] = merged_minmax['Current Max'].astype(int)
         merged_minmax['Current On Hand'] = merged_minmax['Current On Hand'].astype(int)
 
+        # Compact Min & Max Comparison formatting
+        merged_minmax['Min (Curr ➔ Sug)'] = merged_minmax['Current Min'].astype(str) + " ➔ " + merged_minmax['Min_Stock_Qty'].astype(str)
+        merged_minmax['Max (Curr ➔ Sug)'] = merged_minmax['Current Max'].astype(str) + " ➔ " + merged_minmax['Max_Stock_Qty'].astype(str)
+
         # Recommendation Logic
         def get_minmax_recommendation(row):
             c_min, c_max = row['Current Min'], row['Current Max']
@@ -392,21 +414,21 @@ with tab_minmax:
             d_max = s_max - c_max
             
             if d_min > 0 and d_max > 0:
-                return f"⬆️ Increase Min (+{d_min}) & Max (+{d_max})"
+                return f"⬆️ Inc Min (+{d_min}) & Max (+{d_max})"
             elif d_min < 0 and d_max < 0:
-                return f"⬇️ Decrease Min ({d_min}) & Max ({d_max})"
+                return f"⬇️ Dec Min ({d_min}) & Max ({d_max})"
             elif d_min > 0:
-                return f"⬆️ Increase Min (+{d_min})"
+                return f"⬆️ Inc Min (+{d_min})"
             elif d_min < 0:
-                return f"⬇️ Decrease Min ({d_min})"
+                return f"⬇️ Dec Min ({d_min})"
             elif d_max > 0:
-                return f"⬆️ Increase Max (+{d_max})"
+                return f"⬆️ Inc Max (+{d_max})"
             elif d_max < 0:
-                return f"⬇️ Decrease Max ({d_max})"
+                return f"⬇️ Dec Max ({d_max})"
             else:
                 return "🟢 On Target"
 
-        merged_minmax['Action / Recommendation'] = merged_minmax.apply(get_minmax_recommendation, axis=1)
+        merged_minmax['Action / Rec'] = merged_minmax.apply(get_minmax_recommendation, axis=1)
 
         def render_comparison_table(bu_name):
             bu_df = merged_minmax[merged_minmax['Business Unit'] == bu_name].copy()
@@ -415,25 +437,30 @@ with tab_minmax:
                 bu_df.rename(columns={
                     'SKU': 'SKU',
                     'Item': 'Item Description',
-                    'Total_Net_Qty': 'July Net Usage',
-                    'Weekly_Avg_Qty': 'Weekly Avg Demand',
-                    'Current On Hand': 'Current On Hand',
-                    'Current Min': 'Current Min',
-                    'Min_Stock_Qty': 'Suggested Min (1.0 Wk)',
-                    'Current Max': 'Current Max',
-                    'Max_Stock_Qty': 'Suggested Max (2.0 Wks)',
-                    'Target_Stock_Qty': 'Target Stock (1.5 Wks)'
+                    'Total_Net_Qty': 'July Net',
+                    'Weekly_Avg_Qty': 'Wk Avg',
+                    'Current On Hand': 'On Hand',
+                    'Target_Stock_Qty': 'Target (1.5 Wk)'
                 }, inplace=True)
                 
-                bu_df['Weekly Avg Demand'] = bu_df['Weekly Avg Demand'].map('{:.2f}'.format)
+                bu_df['Wk Avg'] = bu_df['Wk Avg'].map('{:.2f}'.format)
                 
+                # Streamlined columns so no horizontal scrolling is required
                 show_cols = [
-                    'SKU', 'Item Description', 'July Net Usage', 'Weekly Avg Demand', 
-                    'Current On Hand', 'Current Min', 'Suggested Min (1.0 Wk)', 
-                    'Current Max', 'Suggested Max (2.0 Wks)', 'Target Stock (1.5 Wks)', 
-                    'Action / Recommendation'
+                    'SKU', 'Item Description', 'July Net', 'Wk Avg', 
+                    'On Hand', 'Min (Curr ➔ Sug)', 'Max (Curr ➔ Sug)', 'Target (1.5 Wk)', 
+                    'Action / Rec'
                 ]
-                st.dataframe(bu_df[show_cols], use_container_width=True, hide_index=True)
+                
+                st.dataframe(
+                    bu_df[show_cols], 
+                    use_container_width=True, 
+                    hide_index=True,
+                    column_config={
+                        "Item Description": st.column_config.TextColumn("Item Description", width="medium"),
+                        "Action / Rec": st.column_config.TextColumn("Action / Rec", width="medium")
+                    }
+                )
             else:
                 st.info(f"No parts usage data available for {bu_name}.")
 
