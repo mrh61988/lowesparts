@@ -850,8 +850,8 @@ with tab_jobs:
         )
 
         st.markdown("---")
-        # --- SECTION 2: Per Tech Revenue per Job Type & Item Type ---
-        st.subheader("👷 Technician Revenue Breakdown by Job Type & Item Type")
+        # --- SECTION 2: Per Tech Revenue per Job Type ---
+        st.subheader("👷 Technician Revenue Breakdown by Job Type")
         
         selected_tech_jobs = st.selectbox("Filter by Technician (Optional):", ["All Technicians"] + sorted(VALID_TECHS))
         
@@ -859,7 +859,7 @@ with tab_jobs:
         if selected_tech_jobs != "All Technicians":
             df_tech_jobs = df_tech_jobs[df_tech_jobs['Technician'] == selected_tech_jobs]
 
-        tech_rev_summary = df_tech_jobs.groupby(['Technician', 'Department', 'Job Type', 'Item / Fixture Type']).agg(
+        tech_rev_summary = df_tech_jobs.groupby(['Technician', 'Department', 'Job Type']).agg(
             Job_Count=('Job Type', 'count'),
             Total_Items=('Total Items', 'sum'),
             Total_Revenue=('Invoice Total', 'sum'),
@@ -874,14 +874,13 @@ with tab_jobs:
         tech_rev_summary['Avg_Revenue_Per_Job'] = tech_rev_summary['Avg_Revenue_Per_Job'].map('${:,.2f}'.format)
 
         st.dataframe(
-            tech_rev_summary[['Technician', 'Department', 'Job Type', 'Item / Fixture Type', 'Job_Count', 'Avg Job Time', 'Avg Item Time', 'Revenue Per Item', 'Total_Revenue', 'Avg_Revenue_Per_Job']], 
+            tech_rev_summary[['Technician', 'Department', 'Job Type', 'Job_Count', 'Avg Job Time', 'Avg Item Time', 'Revenue Per Item', 'Total_Revenue', 'Avg_Revenue_Per_Job']], 
             use_container_width=True, 
             hide_index=True,
             column_config={
                 "Technician": st.column_config.TextColumn("Technician", width="medium"),
                 "Department": st.column_config.TextColumn("Department", width="medium"),
                 "Job Type": st.column_config.TextColumn("Job Type", width="medium"),
-                "Item / Fixture Type": st.column_config.TextColumn("Item / Fixture Type", width="medium"),
                 "Job_Count": st.column_config.NumberColumn("Jobs", width="small"),
                 "Avg Job Time": st.column_config.TextColumn("Avg Job Time", width="small"),
                 "Avg Item Time": st.column_config.TextColumn("Avg Item Time", width="small"),
