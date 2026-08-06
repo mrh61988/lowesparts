@@ -509,81 +509,87 @@ with tab_minmax:
             merged_minmax['Current Min'] = 0
             merged_minmax['Current Max'] = 0
 
-        # Compact Min & Max Comparison formatting
-        merged_minmax['Min (Curr ➔ Sug)'] = merged_minmax['Current Min'].astype(str) + " ➔ " + merged_minmax['Min_Stock_Qty'].astype(str)
-        merged_minmax['Max (Curr ➔ Sug)'] = merged_minmax['Current Max'].astype(str) + " ➔ " + merged_minmax['Max_Stock_Qty'].astype(str)
-
-        # Recommendation Logic with 20% threshold buffer
-        def get_minmax_recommendation(row):
-            c_min, c_max = row['Current Min'], row['Current Max']
-            s_min, s_max = row['Min_Stock_Qty'], row['Max_Stock_Qty']
+        # Recommendation Logic with Zero-Demand protection & 20% threshold buffer
+        def resolve_minmax_and_rec(row):
+            c_min, c_max = int(row['Current Min']), int(row['Current Max'])
+            s_min, s_max = int(row['Min_Stock_Qty']), int(row['Max_Stock_Qty'])
+            target_qty = int(row['Target_Stock_Qty'])
+            j_net = int(row['Total_Net_Qty'])
             
+            # Case 1: Unconfigured SKU in Google Sheet (Min=0, Max=0)
             if c_min == 0 and c_max == 0:
-                if s_min == 0 and s_max == 0:
-                    return "⚪ Zero Demand"
-                return "⚠️ Set Min/Max"
-            
+                if j_net == 0:
+                    return 0, 0, 0, "⚪ Inactive / No Stock"
+                return s_min, s_max, target_qty, "⚠️ Set Min/Max"
+                
+            # Case 2: Configured SKU in Google Sheet, but 0 Usage in analyzed period (July)
+            if j_net == 0:
+                s_min_adj = c_min
+                s_max_adj = c_max
+                target_adj = int(np.ceil(c_min * 1.5)) if c_min > 0 else c_max
+                return s_min_adj, s_max_adj, target_adj, "⚪ Zero Demand in Period"
+                
+            # Case 3: Configured SKU with Active Usage in July
             d_min = s_min - c_min
             d_max = s_max - c_max
             
-            # Check if difference is >= 20%
+            # 20% deviation threshold
             min_flag = abs(d_min) >= (0.20 * c_min) if c_min > 0 else (s_min > 0)
             max_flag = abs(d_max) >= (0.20 * c_max) if c_max > 0 else (s_max > 0)
-
+            
             if not min_flag and not max_flag:
-                return "🟢 On Target"
-
+                return s_min, s_max, target_qty, "🟢 On Target"
+                
             rec = []
             if min_flag:
-                if d_min > 0:
-                    rec.append(f"Inc Min (+{d_min})")
-                else:
-                    rec.append(f"Dec Min ({d_min})")
-                    
+                rec.append(f"Inc Min (+{d_min})" if d_min > 0 else f"Dec Min ({d_min})")
             if max_flag:
-                if d_max > 0:
-                    rec.append(f"Inc Max (+{d_max})")
-                else:
-                    rec.append(f"Dec Max ({d_max})")
-                    
+                rec.append(f"Inc Max (+{d_max})" if d_max > 0 else f"Dec Max ({d_max})")
+                
             if len(rec) == 2:
                 if d_min > 0 and d_max > 0:
-                    return f"⬆️ {rec[0]} & {rec[1].replace('Inc ', '')}"
+                    rec_str = f"⬆️ {rec[0]} & {rec[1].replace('Inc ', '')}"
                 elif d_min < 0 and d_max < 0:
-                    return f"⬇️ {rec[0]} & {rec[1].replace('Dec ', '')}"
+                    rec_str = f"⬇️ {rec[0]} & {rec[1].replace('Dec ', '')}"
                 else:
-                    return f"🔄 {rec[0]} & {rec[1]}"
-            elif len(rec) == 1:
-                if "Inc" in rec[0]:
-                    return f"⬆️ {rec[0]}"
-                else:
-                    return f"⬇️ {rec[0]}"
+                    rec_str = f"🔄 {rec[0]} & {rec[1]}"
+            else:
+                rec_str = f"⬆️ {rec[0]}" if "Inc" in rec[0] else f"⬇️ {rec[0]}"
+                
+            return s_min, s_max, target_qty, rec_str
 
-            return "🟢 On Target"
+        res = merged_minmax.apply(resolve_minmax_and_rec, axis=1)
+        merged_minmax['Min_Stock_Qty_Adj'] = [r[0] for r in res]
+        merged_minmax['Max_Stock_Qty_Adj'] = [r[1] for r in res]
+        merged_minmax['Target_Stock_Qty_Adj'] = [r[2] for r in res]
+        merged_minmax['Action / Rec'] = [r[3] for r in res]
 
-        merged_minmax['Action / Rec'] = merged_minmax.apply(get_minmax_recommendation, axis=1)
+        # Compact Min & Max Comparison formatting
+        merged_minmax['Min (Curr ➔ Sug)'] = merged_minmax['Current Min'].astype(str) + " ➔ " + merged_minmax['Min_Stock_Qty_Adj'].astype(str)
+        merged_minmax['Max (Curr ➔ Sug)'] = merged_minmax['Current Max'].astype(str) + " ➔ " + merged_minmax['Max_Stock_Qty_Adj'].astype(str)
 
-        # Priority Sorter for the dataframe (so important items float to the top)
+        # Priority Sorter for the dataframe
         def get_sort_priority(action_str):
             if "⚠️" in action_str: return 1
             if "⬆️" in action_str or "⬇️" in action_str or "🔄" in action_str: return 2
             if "🟢" in action_str: return 3
-            return 4
+            if "⚪ Zero Demand" in action_str: return 4
+            return 5
 
         merged_minmax['Sort_Priority'] = merged_minmax['Action / Rec'].apply(get_sort_priority)
 
         def render_comparison_table(bu_name):
-            bu_df = merged_minmax[merged_minmax['Business Unit'] == bu_name].copy()
+            bu_df = merged_minmax[merged_minmax['Business Unit'].str.contains(bu_name, case=False, na=False)].copy()
             if not bu_df.empty:
                 # Sort by action priority first, then by target stock volume
-                bu_df.sort_values(by=['Sort_Priority', 'Target_Stock_Qty'], ascending=[True, False], inplace=True)
+                bu_df.sort_values(by=['Sort_Priority', 'Target_Stock_Qty_Adj'], ascending=[True, False], inplace=True)
                 
                 bu_df.rename(columns={
                     'SKU': 'SKU',
                     'Total_Net_Qty': 'July Net',
                     'Weekly_Avg_Qty': 'Wk Avg',
                     'Current On Hand': 'On Hand',
-                    'Target_Stock_Qty': 'Target (1.5 Wk)'
+                    'Target_Stock_Qty_Adj': 'Target (1.5 Wk)'
                 }, inplace=True)
                 
                 bu_df['Wk Avg'] = bu_df['Wk Avg'].map('{:.2f}'.format)
@@ -607,10 +613,10 @@ with tab_minmax:
                 st.info(f"No parts usage data available for {bu_name}.")
 
         st.subheader("1. Lowes - Simple Installs Min/Max Comparison")
-        render_comparison_table('Lowes - Simple Installs')
+        render_comparison_table('Simple Installs')
         
         st.subheader("2. Lowes - Water Heaters Min/Max Comparison")
-        render_comparison_table('Lowes - Water Heaters')
+        render_comparison_table('Water Heaters')
 
     else:
         st.info("Google Sheet parts data not loaded.")
