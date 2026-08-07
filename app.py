@@ -1026,7 +1026,7 @@ with tab_ts:
 with tab_test:
     st.header("🧪 Test Section: Advanced Operations Analytics")
     st.markdown("""
-    Test environment for evaluating item-level parts consumption linked directly to technician revenue generation, business unit replenishment efficiency, quality control callbacks, and regional branch benchmarking.
+    Test environment for evaluating item-level parts consumption linked directly to technician revenue generation, business unit replenishment efficiency, overtime hiring thresholds, quality control callbacks, and regional branch benchmarking.
     """)
 
     st.markdown("---")
@@ -1295,7 +1295,6 @@ with tab_test:
         df_jobs_qc = df_jobs_parsed.copy()
         df_jobs_qc['Is_Unbilled'] = df_jobs_qc['Invoice Total'] == 0
 
-        # 5A. Technician Quality & Callback Scorecard
         qc_tech_rows = []
         for t in sorted(VALID_TECHS):
             t_jobs = df_jobs_qc[df_jobs_qc['Technician'] == t]
@@ -1335,7 +1334,6 @@ with tab_test:
             st.markdown("##### A. Technician Quality & Callback Scorecard")
             st.dataframe(df_qc_tech, use_container_width=True, hide_index=True)
 
-        # 5B. Callback Breakdown by Job Type
         st.markdown("##### B. Callback & $0 Job Breakdown by Job Type")
         qc_job_agg = df_jobs_qc.groupby('Job Type').agg(
             Total_Jobs=('Job Type', 'count'),
@@ -1366,8 +1364,113 @@ with tab_test:
         st.info("Upload 'all jobs.csv' to analyze Quality Control & Callbacks.")
 
     st.markdown("---")
-    # --- TEST TABLE 6: Regional Branch Benchmarking ---
-    st.subheader("6. 📍 Regional Branch Benchmarking (Phoenix vs. Tucson)")
+    # --- TEST TABLE 6: Overtime Trend & Hiring Capacity Model ---
+    st.subheader("6. ⏱️ Overtime Trend & Hiring Capacity Model")
+    st.markdown("""
+    Analyzes overtime accumulation across hourly technicians to evaluate capacity constraints, labor premium costs, and full-time equivalent (FTE) hiring thresholds.
+    """)
+
+    ot_rows = []
+    tot_ot_hrs_all = 0.0
+    tot_ot_premium_cost_all = 0.0
+    tot_hourly_techs = 0
+
+    for t in sorted(VALID_TECHS):
+        m = tech_metrics[t]
+        p_info = PAY_STRUCTURE[t]
+        p_type = p_info["type"]
+        
+        reg_h = m["RegHours"]
+        ot_h = m["OTHours"]
+        tot_h = m["Hours"]
+        base_cap = total_weeks * 40.0
+        util_rate = (tot_h / base_cap * 100.0) if base_cap > 0 else 0.0
+
+        if p_type == "Hourly":
+            rate = p_info["rate"]
+            reg_pay = reg_h * rate
+            ot_pay = ot_h * rate * 1.5
+            ot_premium = ot_h * rate * 0.5
+            gross_pay = reg_pay + ot_pay
+            tot_ot_hrs_all += ot_h
+            tot_ot_premium_cost_all += ot_premium
+            tot_hourly_techs += 1
+        elif p_type == "Commission":
+            gross_pay = m["Revenue"] * p_info["rate"]
+            ot_premium = 0.0
+        else: # Salary
+            gross_pay = p_info["annual"] * (total_days / 365.0)
+            ot_premium = 0.0
+
+        ot_pct_pay = (ot_premium / gross_pay * 100.0) if gross_pay > 0 else 0.0
+
+        if p_type == "Hourly":
+            if ot_h > (total_weeks * 8.0):
+                flag = "🔴 High OT (Add Capacity)"
+            elif ot_h > (total_weeks * 3.0):
+                flag = "🟡 Moderate OT"
+            elif tot_h < (total_weeks * 30.0) and tot_h > 0:
+                flag = "🟡 Underutilized"
+            elif tot_h == 0:
+                flag = "⚪ Inactive"
+            else:
+                flag = "🟢 Balanced"
+        else:
+            flag = f"🔵 {p_type}"
+
+        ot_rows.append({
+            "Technician": t,
+            "Labor Type": p_type,
+            "Total Hours": tot_h,
+            "Reg Hours": reg_h,
+            "OT Hours": ot_h,
+            "Capacity Util %": util_rate,
+            "Gross Pay": gross_pay,
+            "OT Premium Cost (0.5x)": ot_premium,
+            "OT Premium % Pay": ot_pct_pay,
+            "Capacity Status": flag
+        })
+
+    df_ot = pd.DataFrame(ot_rows)
+
+    fte_ot_load = (tot_ot_hrs_all / (40.0 * total_weeks)) if total_weeks > 0 else 0.0
+    
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    kpi1.metric("⏱️ Total Hourly OT Hours", f"{tot_ot_hrs_all:,.1f} hrs")
+    kpi2.metric("💸 OT Premium Cost Spent", f"${tot_ot_premium_cost_all:,.2f}")
+    kpi3.metric("👥 OT Workload in FTEs", f"{fte_ot_load:.2f} Techs")
+    
+    if fte_ot_load >= 0.8:
+        kpi4.metric("💡 Hiring Recommendation", "🔴 Hire Needed", delta=f"{fte_ot_load:.1f} FTE load")
+    elif fte_ot_load >= 0.4:
+        kpi4.metric("💡 Hiring Recommendation", "🟡 Monitor Load", delta="Nearing 0.5 FTE")
+    else:
+        kpi4.metric("💡 Hiring Recommendation", "🟢 Adequate Staffing", delta="Low OT Load")
+
+    if not df_ot.empty:
+        df_ot_disp = df_ot.copy()
+        df_ot_disp["Total Hours"] = df_ot_disp["Total Hours"].map('{:,.2f} hrs'.format)
+        df_ot_disp["Reg Hours"] = df_ot_disp["Reg Hours"].map('{:,.2f} hrs'.format)
+        df_ot_disp["OT Hours"] = df_ot_disp["OT Hours"].map('{:,.2f} hrs'.format)
+        df_ot_disp["Capacity Util %"] = df_ot_disp["Capacity Util %"].map('{:.1f}%'.format)
+        df_ot_disp["Gross Pay"] = df_ot_disp["Gross Pay"].map('${:,.2f}'.format)
+        df_ot_disp["OT Premium Cost (0.5x)"] = df_ot_disp["OT Premium Cost (0.5x)"].map('${:,.2f}'.format)
+        df_ot_disp["OT Premium % Pay"] = df_ot_disp["OT Premium % Pay"].map('{:.1f}%'.format)
+
+        st.dataframe(
+            df_ot_disp,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Technician": st.column_config.TextColumn("Technician", width="medium"),
+                "Labor Type": st.column_config.TextColumn("Labor Type", width="small"),
+                "Capacity Status": st.column_config.TextColumn("Capacity Status", width="medium")
+            }
+        )
+
+    st.markdown("---")
+    # --- TEST TABLE 7: Regional Branch Benchmarking ---
+    st.subheader("7. 📍 Regional Branch Benchmarking (Phoenix vs. Tucson)")
     st.markdown("""
     Comparative operational scorecard evaluating volume, ticket size, technician output, and replenishment efficiency broken down by regional branch location and business unit department.
     """)
