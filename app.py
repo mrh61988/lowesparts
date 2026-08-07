@@ -1469,10 +1469,10 @@ with tab_test:
         )
 
     st.markdown("---")
-    # --- TEST TABLE 7: Technician Warehouse Restock Frequency ---
-    st.subheader("7. 📦 Technician Warehouse Restock Frequency & Batch Analysis")
+    # --- TEST TABLE 7: Technician Warehouse Restock Frequency (EXCLUDING WATER HEATER UNITS) ---
+    st.subheader("7. 📦 Technician Warehouse Restock Frequency & Batch Analysis (Excl. Water Heater Tank Units)")
     st.markdown("""
-    Tracks the frequency and average financial size of warehouse-to-van stock replenishment batches to enforce weekly restock guidelines and minimize non-billable transit trips.
+    Tracks the frequency and average financial size of warehouse-to-van **parts/fittings stock replenishment batches** (excluding water heater tank unit logouts) to enforce weekly restock guidelines and minimize non-billable transit trips.
     """)
 
     if not df_parts.empty:
@@ -1482,7 +1482,9 @@ with tab_test:
                 parts_date_col = col
                 break
 
-        df_p_freq = df_parts.copy()
+        # EXCLUDE WATER HEATER UNITS SHEET SO FREQUENCY FOCUSES STRICTLY ON PARTS RESTOCKS
+        df_p_freq = df_parts[~df_parts['Business Unit'].str.contains('Units', case=False, na=False)].copy()
+        
         if parts_date_col:
             df_p_freq['Restock_Date'] = pd.to_datetime(df_p_freq[parts_date_col], errors='coerce').dt.date
         else:
