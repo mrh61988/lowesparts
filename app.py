@@ -1026,7 +1026,7 @@ with tab_ts:
 with tab_test:
     st.header("🧪 Test Section: Advanced Operations Analytics")
     st.markdown("""
-    Test environment for evaluating item-level parts consumption linked directly to technician revenue generation, business unit replenishment efficiency, overtime hiring thresholds, quality control callbacks, and regional branch benchmarking.
+    Test environment for evaluating item-level parts consumption linked directly to technician revenue generation, business unit replenishment efficiency, quality control callbacks, overtime hiring thresholds, warehouse restock frequencies, and regional branch benchmarking.
     """)
 
     st.markdown("---")
@@ -1469,8 +1469,98 @@ with tab_test:
         )
 
     st.markdown("---")
-    # --- TEST TABLE 7: Regional Branch Benchmarking ---
-    st.subheader("7. 📍 Regional Branch Benchmarking (Phoenix vs. Tucson)")
+    # --- TEST TABLE 7: Technician Warehouse Restock Frequency ---
+    st.subheader("7. 📦 Technician Warehouse Restock Frequency & Batch Analysis")
+    st.markdown("""
+    Tracks the frequency and average financial size of warehouse-to-van stock replenishment batches to enforce weekly restock guidelines and minimize non-billable transit trips.
+    """)
+
+    if not df_parts.empty:
+        parts_date_col = None
+        for col in df_parts.columns:
+            if 'date' in str(col).lower():
+                parts_date_col = col
+                break
+
+        df_p_freq = df_parts.copy()
+        if parts_date_col:
+            df_p_freq['Restock_Date'] = pd.to_datetime(df_p_freq[parts_date_col], errors='coerce').dt.date
+        else:
+            df_p_freq['Restock_Date'] = np.nan
+
+        restock_rows = []
+        for t in sorted(VALID_TECHS):
+            t_parts = df_p_freq[df_p_freq['Tech'] == t]
+            loc = PAY_STRUCTURE[t]['location']
+            j_cnt = tech_metrics[t]['Jobs']
+            
+            if not t_parts.empty:
+                net_val = t_parts['Total Value'].sum()
+                tot_qty = int(t_parts['Qty'].sum()) if 'Qty' in t_parts.columns else 0
+                
+                if parts_date_col and t_parts['Restock_Date'].notna().any():
+                    restock_events = t_parts['Restock_Date'].nunique()
+                else:
+                    restock_events = len(t_parts)
+                    
+                restocks_per_wk = restock_events / total_weeks if total_weeks > 0 else 0.0
+                avg_val_per_restock = (net_val / restock_events) if restock_events > 0 else 0.0
+
+                if loc == "Tucson":
+                    flag = "🌵 Tucson Tech (No Warehouse Pulls)"
+                elif restocks_per_wk > 3.0:
+                    flag = f"🔴 Daily / Frequent Restocker ({restocks_per_wk:.1f}x/wk)"
+                elif restocks_per_wk >= 1.0:
+                    flag = f"🟢 Weekly Restocker ({restocks_per_wk:.1f}x/wk)"
+                elif restock_events > 0:
+                    flag = f"🟡 Occasional Restocker ({restocks_per_wk:.1f}x/wk)"
+                else:
+                    flag = "⚪ Zero Warehouse Restocks"
+            else:
+                net_val = 0.0
+                tot_qty = 0
+                restock_events = 0
+                restocks_per_wk = 0.0
+                avg_val_per_restock = 0.0
+                flag = "🌵 Tucson Tech (No Warehouse Pulls)" if loc == "Tucson" else "⚪ Zero Warehouse Restocks"
+
+            restock_rows.append({
+                "Technician": t,
+                "Branch Location": loc,
+                "Jobs Completed": j_cnt,
+                "Restock Events": restock_events,
+                "Restocks / Week": restocks_per_wk,
+                "Total Items Transferred": tot_qty,
+                "Total Restock Value": net_val,
+                "Avg Value / Restock": avg_val_per_restock,
+                "Restock Behavior Flag": flag
+            })
+
+        df_restock_freq = pd.DataFrame(restock_rows)
+        if not df_restock_freq.empty:
+            df_rf_disp = df_restock_freq.copy()
+            df_rf_disp["Restocks / Week"] = df_rf_disp["Restocks / Week"].map('{:.2f}'.format)
+            df_rf_disp["Total Restock Value"] = df_rf_disp["Total Restock Value"].map('${:,.2f}'.format)
+            df_rf_disp["Avg Value / Restock"] = df_rf_disp["Avg Value / Restock"].map('${:,.2f}'.format)
+
+            st.dataframe(
+                df_rf_disp,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Technician": st.column_config.TextColumn("Technician", width="medium"),
+                    "Branch Location": st.column_config.TextColumn("Branch", width="small"),
+                    "Restock Events": st.column_config.NumberColumn("Restock Batches", width="small"),
+                    "Restocks / Week": st.column_config.TextColumn("Restocks / Wk", width="small"),
+                    "Restock Behavior Flag": st.column_config.TextColumn("Behavior Flag", width="medium")
+                }
+            )
+    else:
+        st.info("Google Sheets parts transfer data not loaded.")
+
+    st.markdown("---")
+    # --- TEST TABLE 8: Regional Branch Benchmarking ---
+    st.subheader("8. 📍 Regional Branch Benchmarking (Phoenix vs. Tucson)")
     st.markdown("""
     Comparative operational scorecard evaluating volume, ticket size, technician output, and replenishment efficiency broken down by regional branch location and business unit department.
     """)
